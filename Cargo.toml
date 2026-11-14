@@ -1,0 +1,22 @@
+[package]
+name = "mould-maker"
+version = "0.1.0"
+edition = "2021"
+description = "Printed rigid mould generator, a SolidCraft plugin"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = "0.46"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"

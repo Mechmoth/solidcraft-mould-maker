@@ -1,0 +1,195 @@
+{
+  "id": "mould-maker",
+  "name": "Mould Maker",
+  "version": "0.1.0",
+  "description": "Printed rigid moulds for round parts: jacket, back plate and plug split to fit your printer, with flange tabs, bolt and dowel holes.",
+  "capabilities": [
+    "commands@0.1"
+  ],
+  "runtime": {
+    "module": "plugin.wasm",
+    "entries": [
+      {
+        "name": "rigid-mould",
+        "effect": "edit",
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "printer_width",
+            "printer_depth",
+            "printer_height",
+            "wall",
+            "back_plate",
+            "flange_width",
+            "flange_thickness",
+            "bolt",
+            "dowel_diameter",
+            "build"
+          ],
+          "properties": {
+            "printer_width": {
+              "type": "number",
+              "title": "Printer bed width",
+              "description": "Build plate X",
+              "default": 300,
+              "minimum": 50,
+              "maximum": 2000,
+              "unit": "mm"
+            },
+            "printer_depth": {
+              "type": "number",
+              "title": "Printer bed depth",
+              "description": "Build plate Y",
+              "default": 300,
+              "minimum": 50,
+              "maximum": 2000,
+              "unit": "mm"
+            },
+            "printer_height": {
+              "type": "number",
+              "title": "Printer height",
+              "description": "Build height Z",
+              "default": 300,
+              "minimum": 50,
+              "maximum": 2000,
+              "unit": "mm"
+            },
+            "wall": {
+              "type": "number",
+              "title": "Wall",
+              "description": "Mould wall outside the part's widest point",
+              "default": 20,
+              "minimum": 5,
+              "maximum": 200,
+              "unit": "mm"
+            },
+            "back_plate": {
+              "type": "number",
+              "title": "Back plate",
+              "description": "Plate thickness over the part's top (the side opposite the open face)",
+              "default": 20,
+              "minimum": 5,
+              "maximum": 200,
+              "unit": "mm"
+            },
+            "flange_width": {
+              "type": "number",
+              "title": "Flange width",
+              "description": "How far the bolting tabs stand off the mould",
+              "default": 25,
+              "minimum": 12,
+              "maximum": 100,
+              "unit": "mm"
+            },
+            "flange_thickness": {
+              "type": "number",
+              "title": "Flange thickness",
+              "description": "Both tabs of a joint together",
+              "default": 16,
+              "minimum": 6,
+              "maximum": 60,
+              "unit": "mm"
+            },
+            "bolt": {
+              "type": "string",
+              "title": "Bolts",
+              "description": "Clearance holes for this size",
+              "enum": [
+                "M4",
+                "M5",
+                "M6",
+                "M8"
+              ],
+              "default": "M6"
+            },
+            "dowel_diameter": {
+              "type": "number",
+              "title": "Dowel pins",
+              "description": "Registration dowel diameter (hole is 0.1 mm larger); 0 for none",
+              "default": 6,
+              "minimum": 0,
+              "maximum": 16,
+              "unit": "mm"
+            },
+            "sectors": {
+              "type": "integer",
+              "title": "Sectors",
+              "description": "Pieces round the jacket; 0 picks the fewest pieces that fit the printer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 64
+            },
+            "part": {
+              "type": "string",
+              "title": "Part body",
+              "description": "Leave empty to use the selected body (or the only body)",
+              "default": "",
+              "maxLength": 80
+            },
+            "core_pin_diameter": {
+              "type": "number",
+              "title": "Core pin diameter",
+              "description": "For one horizontal side hole; 0 for none",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 300,
+              "unit": "mm"
+            },
+            "core_pin_angle": {
+              "type": "number",
+              "title": "Core pin angle",
+              "description": "Direction of the side hole, from +X towards +Y",
+              "default": 0,
+              "minimum": -360,
+              "maximum": 360,
+              "unit": "°"
+            },
+            "core_pin_height": {
+              "type": "number",
+              "title": "Core pin height",
+              "description": "Hole centre above the part's bottom face",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 5000,
+              "unit": "mm"
+            },
+            "build": {
+              "type": "string",
+              "title": "Build",
+              "description": "A big mould can be built in two runs: jacket, then plate",
+              "enum": [
+                "everything",
+                "jacket",
+                "plate"
+              ],
+              "default": "everything"
+            }
+          }
+        },
+        "slots": [
+          {
+            "kind": "menu",
+            "name": "Printed rigid mould…"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      "selection.get",
+      "inspect.measure",
+      "model.mesh",
+      "solid.cylinder",
+      "solid.box",
+      "solid.move",
+      "solid.combine",
+      "solid.pattern.circular",
+      "solid.remove",
+      "body.rename"
+    ],
+    "limits": {
+      "fuel": 20000000000,
+      "memory_mib": 128,
+      "deadline_ms": 30000
+    }
+  }
+}
