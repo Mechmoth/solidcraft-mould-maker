@@ -158,14 +158,19 @@ pub fn jacket_bands(p: &Profile, z_split: f64, margin: f64) -> Result<Vec<Band>,
     let mut start = 0usize;
     while start < iv.len() {
         let (mut lo, mut hi) = (iv[start].1, iv[start].2);
-        if lo > hi {
-            return Err(format!(
-                "at z = {:.1} mm the part's outer wall is too thin or not round enough for a radial jacket \
-                 (needs {:.1} mm of wall all the way round, has {:.1})",
-                iv[start].0 - p.zmin,
-                2.0 * margin,
-                iv[start].2 - iv[start].1 + 2.0 * margin
-            ));
+        let not_round = |k: usize| {
+            format!(
+                "at {:.0} mm up the part's wall is too thin or not round enough for a radial jacket: its inside \
+                 reaches {:.0} mm from the axis but its outside comes in to {:.0} mm. Mould Maker 0.1 handles round parts",
+                iv[k].0 - p.zmin,
+                iv[k].1 - margin,
+                iv[k].2 + margin
+            )
+        };
+        if let Some(k) = (start..iv.len()).find(|&k| iv[k].1 > iv[k].2) {
+            if k == start {
+                return Err(not_round(k));
+            }
         }
         let mut end = start;
         while end + 1 < iv.len() {
@@ -188,8 +193,11 @@ pub fn jacket_bands(p: &Profile, z_split: f64, margin: f64) -> Result<Vec<Band>,
             // A one-level band that cannot overlap the next: the wall jumps between two slices.
             let (nlo, nhi) = (iv[end].1.max(iv[end + 1].1), iv[end].2.min(iv[end + 1].2));
             if nlo > nhi {
+                if iv[end + 1].1 > iv[end + 1].2 {
+                    return Err(not_round(end + 1));
+                }
                 return Err(format!(
-                    "the part's outer wall changes too abruptly near z = {:.1} mm for a stepped jacket split",
+                    "the part's outer wall changes too abruptly near {:.0} mm up for a stepped jacket split",
                     iv[end].0 - p.zmin
                 ));
             }
