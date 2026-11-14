@@ -152,7 +152,9 @@ pub fn jacket_bands(p: &Profile, z_split: f64, margin: f64) -> Result<Vec<Band>,
         }
     }
     if iv.is_empty() {
-        return Err("the part has no slices below the jacket split".into());
+        return Err("Round mould couldn't find the part's outside wall. Stand the part on its open face (the face you trowel), \
+                    or select that face before running."
+            .into());
     }
     let mut bands = Vec::new();
     let mut start = 0usize;
@@ -160,11 +162,9 @@ pub fn jacket_bands(p: &Profile, z_split: f64, margin: f64) -> Result<Vec<Band>,
         let (mut lo, mut hi) = (iv[start].1, iv[start].2);
         let not_round = |k: usize| {
             format!(
-                "at {:.0} mm up the part's wall is too thin or not round enough for a radial jacket: its inside \
-                 reaches {:.0} mm from the axis but its outside comes in to {:.0} mm. Mould Maker 0.1 handles round parts",
-                iv[k].0 - p.zmin,
-                iv[k].1 - margin,
-                iv[k].2 + margin
+                "This part isn't round enough for Round mould: {} its outside isn't round, so the jacket can't pull off \
+                 sideways. Use Plugins › Box mould… for parts with flat sides.",
+                if iv[k].0 - p.zmin < 1.0 { "right at the open face".to_string() } else { format!("about {:.0} mm up from the open face", iv[k].0 - p.zmin) }
             )
         };
         if let Some(k) = (start..iv.len()).find(|&k| iv[k].1 > iv[k].2) {
@@ -197,7 +197,8 @@ pub fn jacket_bands(p: &Profile, z_split: f64, margin: f64) -> Result<Vec<Band>,
                     return Err(not_round(end + 1));
                 }
                 return Err(format!(
-                    "the part's outer wall changes too abruptly near {:.0} mm up for a stepped jacket split",
+                    "The part's outside steps in or out too sharply about {:.0} mm up from the open face for Round mould's \
+                     jacket to pull off. Soften that step with a chamfer or draft, or use Plugins › Box mould….",
                     iv[end].0 - p.zmin
                 ));
             }

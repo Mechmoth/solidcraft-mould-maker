@@ -1,71 +1,74 @@
 # Mould Maker
 
-A SolidCraft plugin that builds a bolt-together, 3D-printable rigid mould around a round part.
-Made for GFRC and concrete casting, where the part is cast upside down and its bottom face is the
-open face you screed or trowel.
+A SolidCraft plugin that builds a bolt-together, 3D-printable rigid mould around a part. Made for
+GFRC and concrete casting, where the part is cast with one face open: the face you pour into and
+trowel.
 
 Needs SolidCraft 0.41 or later (capability `commands@0.1`). Runs sandboxed: no files, no network,
 no clock. Everything it makes is ordinary SolidCraft features, so the saved design opens without
 the plugin.
 
-## What you get
+## Two moulds
 
-- **Jacket**: the outside wall, cut into sectors that pull off sideways.
-- **Plate**: the back plate with the plug that fills the part's cavity, cut into rings and
-  sectors that lift off upwards.
-- **Flange tabs** on the outside of every joint, never on a casting face, with clearance holes
-  for M4, M5, M6 or M8 bolts (2 or more per joint, about 150 mm apart) and one dowel hole per
-  joint (dowel diameter + 0.1 mm).
-- **Core pin** (optional) for one horizontal side hole, on the jacket piece that pulls straight
-  out of the hole.
-- **Sizes chosen for your printer**: with Sectors = 0 the plugin picks the layout with the fewest
-  pieces that fit the bed, upright, turned on the bed, or on their side.
+- **Plugins › Round mould…** for bowls, planters, rings, birdbaths, fountain basins: a jacket
+  cut into sectors that pull off sideways, and a back plate with the plug that fills the part's
+  cavity, cut into rings and sectors that lift off. Optional core pin for one side hole.
+- **Plugins › Box mould…** for parts with flat or gently curved sides: four walls that pull
+  straight off sideways and a back that lifts off, split on mitres at the corners.
+
+Both put flanges on the outside of every joint, never on a casting face, with clearance holes
+for M4, M5, M6 or M8 bolts (or none, for clamps) and one dowel hole per joint, and size every
+piece to your printer.
 
 ## Use
 
-1. Model the part standing on its open face: the face you trowel is the lowest face, any cavity
-   opens upwards, and the part is roughly round about a vertical axis.
-2. Select the part (or type its body name in **Part body**).
-3. **Plugins › Printed rigid mould…**, check the fields, **Run**.
+1. Select the part. To choose the open face, click it instead: a flat face of the part. With
+   the whole part selected, the open face is its bottom face.
+2. **Plugins › Round mould…** or **Box mould…**, check the fields, **Run**.
 
-The result is one undo step. Pieces are named `Mould jacket`, `Mould jacket (2)`…,
-`Mould plate ring 1`…, `Mould plate centre`…. The run returns a report: layout, piece sizes and
-how each prints, bolt and dowel counts, and warnings (for example a plug that would lock in, or a
-side hole that needs a core pin).
+The part doesn't have to stand on its open face: the plugin turns a copy so the open face faces
+down, builds the mould round it, and turns the pieces back. The result is one undo step.
 
-### Big moulds: two runs
+Hover a field's name for what it does.
 
-One plugin run may make at most 256 SolidCraft commands and must finish within 30 s. The plugin
-counts its commands before touching the design. If a mould is too big for one run it stops with
-a message saying so; set **Build** to `jacket` and run, then `plate` and run again. Each run is
-its own undo step.
+### Big round moulds: two runs
+
+One plugin run may make at most 256 SolidCraft commands and must finish within 30 s. Round
+mould counts its commands before touching the design. If the whole mould doesn't fit in one
+run, it builds the jacket; run **Round mould…** again with the same part selected and it builds
+the back plate. Each run is its own undo step. (SolidCraft 0.41 shows nothing when a plugin
+finishes, so watch for the back plate missing.)
 
 ## Fields
 
 | Field | Default | Meaning |
 |---|---|---|
-| Printer bed width / depth / height | 300 / 300 / 300 mm | Build volume |
-| Wall | 20 mm | Mould wall outside the part's widest point |
-| Back plate | 20 mm | Plate over the part's top |
-| Flange width | 25 mm | How far the tabs stand off the mould |
-| Flange thickness | 16 mm | Both tabs of a joint together |
-| Bolts | M6 | Clearance holes: M4 4.5, M5 5.5, M6 6.6, M8 9.0 mm |
+| Printer | K1 Max | K1 Max (300 × 300 × 300 mm), or Custom to use the bed fields |
+| Bed width / depth / height | 300 mm | Build volume, when Printer is Custom |
+| Wall | 20 mm | Mould thickness round the part |
+| Back plate | 20 mm | Plate on the side opposite the open face |
+| Flange width | 25 mm | How far the flanges stand out; at least 2.5 × the bolt hole |
+| Flange thickness | 16 mm | Both flanges of a joint together |
+| Bolts | M6 | Clearance holes: M4 4.5, M5 5.5, M6 6.6, M8 9.0 mm; None for clamps |
 | Dowel pins | 6 mm | 0 for none |
-| Build | everything | `jacket` or `plate` for a two-run build |
-| Sectors | 0 | 0 = automatic; 2 to 64 forces a count |
+| Sectors (round) | 0 | 0 = automatic; 2 to 64 forces a count |
+| Core pin diameter / angle / height (round) | 0 | One side hole: diameter, direction from +X, centre height from the open face |
 | Part body | (selection) | Body name if nothing is selected |
-| Core pin diameter / angle / height | 0 | One side hole: diameter, direction from +X, centre height above the bottom face |
 
-## Limits (v0.1)
+## Limits (v0.2)
 
-- Round parts only (bowls, planters, rings, birdbaths, fountain basins). A square or strongly
-  oval part is refused with a message: the jacket split radius must fit inside the wall all the
-  way round.
-- The plug must lift straight up: a cavity that narrows going up is reported as a warning, not
-  fixed.
+- Round mould: round parts only. A square or strongly oval part is refused with a message
+  pointing to Box mould. The plug must lift straight out: a cavity that narrows going up is
+  reported, not fixed.
+- Box mould: every face must let go of the piece that moulds it, pulling straight sideways or
+  straight back. The plugin checks this first and names the place if not. Recesses in the open
+  face (pad seats, say) can't be cast with an open mould: they come out solid. Walls are not
+  split into strips yet: a piece bigger than the printer is refused.
 - Pieces are solid. Print them with low infill; hollowing is planned.
-- The part is read from a coarse mesh (about 1/600 of its size), and every split keeps that much
+- No gussets, seal grooves or piece numbers yet.
+- The part is read from a coarse mesh (about 1/600 of its size), and round splits keep that much
   margin plus 1.5 mm from the part's faces.
+- Sand or coat the casting faces before use: printed layer lines show on the concrete.
 
 ## Build from source
 
@@ -74,8 +77,10 @@ its own undo step.
     cargo test                 # analysis and layout unit tests
     SOLIDCRAFT_CLI=/path/to/solidcraft-cli python3 tests/cli_test.py                  # test bowl
     SOLIDCRAFT_CLI=... python3 tests/cli_test.py design.sc Body '{"core_pin_diameter": 50}'
+    SOLIDCRAFT_CLI=... python3 tests/cli_test.py bookend.sc Bookend '{"entry": "box-mould"}'
 
-`cargo run --release --example host_run -- <solidcraft-cli> <design.sc> '<params>'` runs the same
+`cargo run --release --example host_run -- <solidcraft-cli> <design.sc> '<params>'` (params may name an
+`entry` and a `select`) runs the same
 logic natively against `solidcraft-cli mcp --headless` and times every command.
 
 ## SolidCraft 0.41 notes found while building this
@@ -89,6 +94,8 @@ logic natively against `solidcraft-cli mcp --headless` and times every command.
   unique name.
 - A boolean's cost is mostly per tool body and per hole, not per call, so holes are drilled into
   small tab bodies and each piece gets one join.
+- An edit entry that succeeds shows only "finished": its result, warnings and log are not shown,
+  so a plugin can't tell the user what to do next.
 
 ## Licence
 

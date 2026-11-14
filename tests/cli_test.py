@@ -1,6 +1,10 @@
 """Integration test: run the built plugin on a real SolidCraft host (headless MCP) and check the mould.
 
-    SOLIDCRAFT_CLI=/path/to/solidcraft-cli python3 tests/cli_test.py [design.sc part-body pin-json]
+    SOLIDCRAFT_CLI=/path/to/solidcraft-cli python3 tests/cli_test.py [design.sc part-body params-json]
+
+params-json may hold "entry" (round-mould, the default, or box-mould), "runs" (how many times to
+run it: a big round mould builds its jacket, then its plate), "select" (select.set items in place
+of the part body) and "expect_error" (a piece of the message the run must fail with).
 
 Without arguments it builds a test bowl itself. Checks: one undo step, every piece a closed solid,
 nothing of the mould inside the part, pieces do not overlap, pieces + part + holes fill the
@@ -81,27 +85,41 @@ def main():
         part = h.tool("measure", names_only=True)["bodies"][0]["name"]
     ins = h.ex("plugin.inspect", path=pkg)
     check(ins.get("within_host_limits", True), f"inspect: within host limits ({ins.get('host_limits')})")
-    h.ex("select.set", items=[{"type": "body", "name": part}])
+    entry = extra.pop("entry", "round-mould")
+    runs = extra.pop("runs", 1)
+    select = extra.pop("select", None) or [{"type": "body", "name": part}]
+    expect_error = extra.pop("expect_error", None)
+    h.ex("select.set", items=select)
     print("selection:", json.dumps(h.ex("selection.get", detail=False))[:200])
     before = h.tool("measure", summary=True)
     part_v = next(b["volume_mm3"] for b in before["bodies"] if b["name"] == part)
-    params = {"printer_width": 300, "printer_depth": 300, "printer_height": 300, "wall": 20, "back_plate": 20,
-              "flange_width": 25, "flange_thickness": 16, "bolt": "M6", "dowel_diameter": 6, "build": "everything"}
+    params = {"printer": "K1 Max", "wall": 20, "back_plate": 20, "flange_width": 25, "flange_thickness": 16, "bolt": "M6", "dowel_diameter": 6}
     params.update(extra)
-    seq = params.pop("build_sequence", None) or [params.get("build", "everything")]
+    if expect_error:
+        try:
+            h.ex("plugin.run", path=pkg, approval=ins["approval"], entry=entry, params=params)
+            check(False, f"the run fails with '{expect_error}'")
+        except RuntimeError as e:
+            check(expect_error in str(e), f"the run fails with '{expect_error}': {str(e)[:400]}")
+        after = h.tool("measure", names_only=True)
+        check([b["name"] for b in after["bodies"]] == [b["name"] for b in before["bodies"]], "the design is untouched")
+        print("FAILED" if check.failed else "ALL PASSED")
+        sys.exit(1 if check.failed else 0)
     reps = []
-    for mode in seq:
-        params["build"] = mode
-        if len(seq) > 1:
+    for i in range(runs):
+        if i:
             print("bodies now:", [b["name"] for b in h.tool("measure", names_only=True)["bodies"]])
-            h.ex("select.set", items=[{"type": "body", "name": part}])
+            h.ex("select.set", items=select)
         t = time.time()
-        res = h.ex("plugin.run", path=pkg, approval=ins["approval"], entry="rigid-mould", params=params)
+        res = h.ex("plugin.run", path=pkg, approval=ins["approval"], entry=entry, params=params)
         dt = time.time() - t
         r1 = res.get("result", res)
-        print(f"build={mode}:", json.dumps({k: v for k, v in r1.items() if k not in ("jacket", "plate_rings", "plate_centre", "piece_kinds")}))
-        check(dt < 30, f"build={mode} ran in {dt:.1f} s (host deadline 30 s)")
+        print(f"run {i + 1}:", json.dumps({k: v for k, v in r1.items() if k not in ("jacket", "plate_rings", "plate_centre", "piece_kinds", "sizes")}))
+        check(dt < 30, f"run {i + 1} took {dt:.1f} s (host deadline 30 s)")
         reps.append(r1)
+    if entry == "box-mould":
+        return check_box(h, part, reps[-1], params)
+    check(reps[-1].get("next") is None, "the last run says nothing is left to build")
     rep = reps[-1]
     rep = dict(rep, jacket=[p for r in reps for p in r["jacket"]],
                plate_rings=[[p for r in reps for ring in r["plate_rings"][i:i+1] for p in ring] for i in range(max(len(r["plate_rings"]) for r in reps))],
@@ -125,11 +143,11 @@ def main():
         print("interference keys:", list(inter.keys()))
     total = sum(bodies[p]["volume_mm3"] for p in pieces)
     print(f"mould volume {total/1e6:.2f} L, part {part_v/1e6:.2f} L")
-    for _ in seq:
+    for _ in range(runs):
         h.tool("undo")
     back = h.tool("measure", summary=True)
-    check([b["name"] for b in back["bodies"]] == [part], f"{len(seq)} undo step(s) remove the whole mould")
-    for _ in seq:
+    check([b["name"] for b in back["bodies"]] == [part], f"{runs} undo step(s) remove the whole mould")
+    for _ in range(runs):
         h.tool("redo")
     pin = extra.get("core_pin_diameter", 0)
     if pin:
@@ -144,6 +162,10 @@ def main():
         owners = sorted({c["a"] if c["b"] == probe else c["b"] for c in hit if probe in (c["a"], c["b"]) and c["volume_mm3"] > 1})
         check(len(owners) == 1 and owners[0].startswith("Mould jacket"), f"core pin: the side hole is filled by one jacket piece {owners}")
         h.ex("solid.remove", bodies=[probe])
+    finish(h)
+
+
+def finish(h):
     out = os.environ.get("MOULD_TEST_OUT")
     if out:
         h.tool("save", path=os.path.join(out, "mould-test.sc"))
@@ -151,6 +173,29 @@ def main():
             h.tool("screenshot", view=view, grid=False, axes=False, width=1400, height=1000, path=os.path.join(out, f"mould-{view}.png"))
     print("FAILED" if check.failed else "ALL PASSED")
     sys.exit(1 if check.failed else 0)
+
+
+def check_box(h, part, rep, params):
+    pieces = rep["walls"] + rep["back"]
+    check(len(pieces) == rep["pieces"] and len(pieces) >= 5, f"{len(pieces)} pieces named")
+    after = h.tool("measure", summary=True)
+    bodies = {b["name"]: b for b in after["bodies"]}
+    extra_bodies = sorted(set(bodies) - set(pieces) - {part})
+    check(not extra_bodies, f"only the part and the pieces remain (extra: {extra_bodies})")
+    check(all(bodies[p]["closed"] for p in pieces), "every piece is a closed solid")
+    inter = h.ex("inspect.interference", bodies=pieces + [part])
+    clashes = [c for c in inter["interferences"] if c.get("volume_mm3", 1) > 1.0]
+    check(not clashes, f"no piece overlaps another or the part ({len(clashes)} clashes)")
+    bed = sorted([300, 300, 300])
+    for s in rep["sizes"]:
+        check(all(a <= b + 0.01 for a, b in zip(sorted(s["size_mm"]), bed)), f"{s['piece']} {s['size_mm']} fits the printer")
+    # The mould and part fill the outer box: nothing of the cavity is left open but the open face.
+    total = sum(bodies[p]["volume_mm3"] for p in pieces)
+    print(f"mould volume {total/1e6:.2f} L; warnings: {rep['warnings']}")
+    h.tool("undo")
+    check([b["name"] for b in h.tool("measure", names_only=True)["bodies"]] == [part], "one undo step removes the whole mould")
+    h.tool("redo")
+    finish(h)
 
 
 if __name__ == "__main__":

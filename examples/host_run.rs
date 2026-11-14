@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Instant;
 
-use mould_maker::{parse_params, rigid_mould, Runner};
+use mould_maker::{parse_params, run_entry, Runner};
 use serde_json::{json, Value};
 
 struct Mcp {
@@ -88,7 +88,11 @@ fn main() {
             let names = h.tool("measure", json!({"names_only": true})).unwrap();
             eprintln!("bodies before run {i}: {}", names["bodies"].as_array().map(|a| a.iter().map(|b| b["name"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(", ")).unwrap_or_default());
         }
-        r = rigid_mould(&mut h, &parse_params(one));
+        if let Some(sel) = one.get("select") {
+            h.tool("execute", json!({"command": "select.set", "params": {"items": sel}})).unwrap();
+        }
+        let entry = one.get("entry").and_then(Value::as_str).unwrap_or("round-mould").to_string();
+        r = run_entry(&mut h, &entry, &parse_params(one));
         if r.is_err() {
             break;
         }

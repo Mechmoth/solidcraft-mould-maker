@@ -1,15 +1,22 @@
-//! Mould Maker: printed rigid moulds for round parts, a SolidCraft plugin.
+//! Mould Maker: printed rigid moulds, a SolidCraft plugin.
 //!
-//! Entry `rigid-mould`: takes the selected (or named) part, which must be roughly round about a
-//! vertical axis and is cast upside down with its bottom face as the open, trowelled face. It
-//! builds a bolt-together mould around it: a jacket that pulls off sideways, a back plate with
-//! plug that lifts off, flange tabs outside the casting faces with bolt and dowel holes, and
-//! every piece sized to fit the printer. Everything is made of ordinary SolidCraft features.
+//! Two entries share one prelude (find the part and its open face, turn a working copy so the
+//! open face faces down, read a mesh of it):
+//! - `round-mould`: parts roughly round about the open face's normal. A jacket that pulls off
+//!   sideways in sectors, a back plate with plug in rings that lifts off, flange tabs, bolt and
+//!   dowel holes, every piece sized to the printer. Big moulds take two runs, chosen by itself.
+//! - `box-mould`: parts with flat or gently curved sides. Four walls that pull straight off
+//!   sideways and a back that lifts off, split on mitres, with bolting ears at every joint.
+//!
+//! Everything is made of ordinary SolidCraft features, so a saved design needs no plugin.
 
 pub mod analysis;
+pub mod boxm;
 pub mod build;
+pub mod geom;
 pub mod layout;
 
+use geom::{Rot, V3};
 use serde_json::{json, Value};
 
 /// What the plugin needs from the host: run one command with JSON args, get the JSON reply.
@@ -19,9 +26,18 @@ pub trait Runner {
     fn progress(&mut self, _fraction: f32, _message: &str) {}
 }
 
+/// Host calls one run may make.
+pub const HOST_CALLS: usize = 256;
+/// Pieces one run builds comfortably inside the host's 30 s limit on a typical desktop.
+pub const PIECE_BUDGET: usize = 36;
+
+/// Printer presets: name and build volume (mm).
+pub const PRINTERS: &[(&str, [f64; 3])] = &[("K1 Max", [300.0, 300.0, 300.0])];
+
 #[derive(Clone, Debug)]
 pub struct Params {
     pub part: String,
+    pub printer: String,
     pub bed: layout::Bed,
     pub sectors: usize,
     pub wall: f64,
@@ -33,15 +49,16 @@ pub struct Params {
     pub pin_diameter: f64,
     pub pin_angle: f64,
     pub pin_height: f64,
-    pub build: String,
 }
 
+/// Clearance hole for a bolt size; `Some(0.0)` for no bolts (clamps); `None` if unknown.
 pub fn bolt_clearance(size: &str) -> Option<f64> {
     match size {
         "M4" => Some(4.5),
         "M5" => Some(5.5),
         "M6" => Some(6.6),
         "M8" => Some(9.0),
+        "None" => Some(0.0),
         _ => None,
     }
 }
@@ -49,9 +66,13 @@ pub fn bolt_clearance(size: &str) -> Option<f64> {
 pub fn parse_params(v: &Value) -> Params {
     let num = |k: &str, d: f64| v.get(k).and_then(Value::as_f64).unwrap_or(d);
     let text = |k: &str, d: &str| v.get(k).and_then(Value::as_str).unwrap_or(d).trim().to_string();
+    let printer = text("printer", "K1 Max");
+    let custom = layout::Bed { x: num("printer_width", 300.0), y: num("printer_depth", 300.0), z: num("printer_height", 300.0) };
+    let bed = PRINTERS.iter().find(|(n, _)| *n == printer).map(|(_, b)| layout::Bed { x: b[0], y: b[1], z: b[2] }).unwrap_or(custom);
     Params {
         part: text("part", ""),
-        bed: layout::Bed { x: num("printer_width", 300.0), y: num("printer_depth", 300.0), z: num("printer_height", 300.0) },
+        printer,
+        bed,
         sectors: num("sectors", 0.0).round().max(0.0) as usize,
         wall: num("wall", 20.0),
         back_plate: num("back_plate", 20.0),
@@ -62,51 +83,46 @@ pub fn parse_params(v: &Value) -> Params {
         pin_diameter: num("core_pin_diameter", 0.0),
         pin_angle: num("core_pin_angle", 0.0),
         pin_height: num("core_pin_height", 0.0),
-        build: text("build", "everything"),
     }
 }
 
-/// (field, reason) for the first bad input.
+/// (field, reason) for the first bad input. Reasons are whole sentences that say how to fix it.
 pub fn validate(p: &Params) -> Result<(), (String, String)> {
-    let bad = |f: &str, why: &str| Err((f.to_string(), why.to_string()));
-    for (f, v, lo, hi) in [
-        ("printer_width", p.bed.x, 50.0, 2000.0),
-        ("printer_depth", p.bed.y, 50.0, 2000.0),
-        ("printer_height", p.bed.z, 50.0, 2000.0),
-        ("wall", p.wall, 5.0, 200.0),
-        ("back_plate", p.back_plate, 5.0, 200.0),
-        ("flange_width", p.flange_width, 12.0, 100.0),
-        ("flange_thickness", p.flange_thickness, 6.0, 60.0),
-        ("dowel_diameter", p.dowel_diameter, 0.0, 16.0),
-        ("core_pin_diameter", p.pin_diameter, 0.0, 300.0),
+    let bad = |f: &str, why: String| Err((f.to_string(), why));
+    if p.printer != "Custom" && !PRINTERS.iter().any(|(n, _)| *n == p.printer) {
+        return bad("printer", "Choose a printer from the list, or Custom to type its build volume.".into());
+    }
+    for (f, label, v, lo, hi) in [
+        ("printer_width", "Bed width", p.bed.x, 50.0, 2000.0),
+        ("printer_depth", "Bed depth", p.bed.y, 50.0, 2000.0),
+        ("printer_height", "Bed height", p.bed.z, 50.0, 2000.0),
+        ("wall", "Wall", p.wall, 5.0, 200.0),
+        ("back_plate", "Back plate", p.back_plate, 5.0, 200.0),
+        ("flange_width", "Flange width", p.flange_width, 12.0, 100.0),
+        ("flange_thickness", "Flange thickness", p.flange_thickness, 6.0, 60.0),
+        ("dowel_diameter", "Dowel pins", p.dowel_diameter, 0.0, 16.0),
+        ("core_pin_diameter", "Core pin diameter", p.pin_diameter, 0.0, 300.0),
     ] {
         if !(v.is_finite() && v >= lo && v <= hi) {
-            return bad(f, &format!("must be between {lo} and {hi}"));
+            return bad(f, format!("{label} must be between {lo} and {hi} mm."));
         }
     }
     if p.sectors == 1 || p.sectors > 64 {
-        return bad("sectors", "use 0 for automatic, or 2 to 64");
+        return bad("sectors", "Sectors must be 0 (the plugin chooses) or 2 to 64.".into());
     }
-    let Some(bc) = bolt_clearance(&p.bolt) else { return bad("bolt", "choose M4, M5, M6 or M8") };
-    if p.flange_width < 2.5 * bc {
-        return bad("flange_width", &format!("needs at least {:.0} mm for {} bolts", 2.5 * bc, p.bolt));
-    }
-    if build_mode(&p.build).is_none() {
-        return bad("build", "choose everything, jacket or plate");
+    let Some(bc) = bolt_clearance(&p.bolt) else { return bad("bolt", "Choose M4, M5, M6, M8 or None.".into()) };
+    let hole = bc.max(if p.dowel_diameter > 0.0 { p.dowel_diameter + 0.1 } else { 0.0 });
+    if hole > 0.0 && p.flange_width < 2.5 * hole {
+        let what = if bc >= p.dowel_diameter { format!("{} bolts", p.bolt) } else { format!("{} mm dowels", p.dowel_diameter) };
+        return bad(
+            "flange_width",
+            format!("Flange width must be at least {:.0} mm for {what}. Raise Flange width or pick smaller bolts or dowels.", (2.5 * hole).ceil()),
+        );
     }
     if p.dowel_diameter > 0.0 && p.dowel_diameter < 2.0 {
-        return bad("dowel_diameter", "use 0 for no dowels, or at least 2 mm");
+        return bad("dowel_diameter", "Dowel pins must be 0 (no dowels) or at least 2 mm.".into());
     }
     Ok(())
-}
-
-pub fn build_mode(s: &str) -> Option<build::Build> {
-    match s {
-        "everything" => Some(build::Build::Everything),
-        "jacket" => Some(build::Build::Jacket),
-        "plate" => Some(build::Build::Plate),
-        _ => None,
-    }
 }
 
 /// Stands in for the host to count the calls a build would make, before touching the design.
@@ -125,100 +141,199 @@ impl Runner for Dry {
                 let count = args.get("count").and_then(Value::as_u64).unwrap_or(1) as usize;
                 json!({"created_bodies": (1..count).map(|i| format!("{fresh}.{i}")).collect::<Vec<_>>(), "name": fresh})
             }
-            "solid.combine" | "solid.mirror" | "solid.remove" | "body.rename" => json!({}),
+            "solid.combine" | "solid.remove" | "body.rename" => json!({}),
             "solid.move" if args.get("copy").and_then(Value::as_bool) != Some(true) => json!({}),
             _ => json!({"created_bodies": [fresh], "name": fresh}),
         })
     }
 }
 
-/// Host calls one run may make (the host refuses past 256; a few go to reading the part).
-pub const CALL_BUDGET: usize = 248;
-/// Pieces one run builds comfortably inside the host's 30 s limit on a typical desktop.
-pub const PIECE_BUDGET: usize = 36;
+/// The part as the mould sees it.
+pub struct Prep {
+    /// The user's body.
+    pub source: String,
+    /// The body the mould is built round: the source, or a turned working copy.
+    pub part: String,
+    /// The turn taking the source onto the working copy, about `origin`.
+    pub turn: Option<(Rot, V3)>,
+    pub lo: V3,
+    pub hi: V3,
+    pub mesh: geom::Mesh,
+    pub tol: f64,
+    pub existing: Vec<String>,
+    /// Host calls made so far.
+    pub calls: usize,
+}
 
-fn find_part<R: Runner>(r: &mut R, p: &Params) -> Result<String, String> {
-    if !p.part.is_empty() {
-        return Ok(p.part.clone());
-    }
-    let sel = r.run("selection.get", json!({"detail": false}))?;
-    if let Some(items) = sel.get("items").and_then(Value::as_array) {
-        for it in items {
-            let kind = it.get("kind").or_else(|| it.get("type")).and_then(Value::as_str).unwrap_or("");
-            // A body item names itself; a face or edge item names its body.
-            let body = match kind {
-                "body" => it.get("name").or_else(|| it.get("body")),
-                "face" | "edge" | "vertex" => it.get("body"),
-                _ => None,
-            };
-            if let Some(body) = body.and_then(Value::as_str) {
-                return Ok(body.to_string());
-            }
+impl Prep {
+    /// Host calls `finish` will make.
+    pub fn finish_calls(&self) -> usize {
+        if self.turn.is_some() {
+            2
+        } else {
+            0
         }
     }
-    let all = r.run("inspect.measure", json!({"names_only": true}))?;
-    let names: Vec<String> = all
-        .get("bodies")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|b| b.get("name").and_then(Value::as_str).map(String::from)).collect())
-        .unwrap_or_default();
-    match names.len() {
-        1 => Ok(names[0].clone()),
-        0 => Err("the design has no body to mould".into()),
-        _ => Err("select the part to mould (or type its body name in Part)".into()),
+    /// A world point (in the user's design) for a point of the working copy.
+    pub fn to_world(&self, p: V3) -> V3 {
+        match &self.turn {
+            Some((rot, o)) => geom::add(rot.inverse().apply(geom::sub(p, *o)), *o),
+            None => p,
+        }
+    }
+    /// Turn the pieces back onto the user's part and drop the working copy.
+    pub fn finish<R: Runner>(&self, r: &mut R, pieces: &[String]) -> Result<(), String> {
+        if let Some((rot, o)) = &self.turn {
+            r.run("solid.move", json!({"bodies": pieces, "axis": rot.axis, "angle": format!("{} deg", -rot.deg), "origin": o}))?;
+            r.run("solid.remove", json!({"bodies": [self.part]}))?;
+        }
+        Ok(())
     }
 }
 
-/// Build the mould; returns what was made.
-pub fn rigid_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
-    validate(p).map_err(|(f, why)| format!("{f}: {why}"))?;
-    let part = find_part(r, p)?;
-    r.progress(0.02, "reading the part");
-    let m = r.run("inspect.measure", json!({"bodies": [part]}))?;
-    let body = m.get("bodies").and_then(|b| b.get(0)).ok_or("the part was not measured")?;
-    if body.get("closed").and_then(Value::as_bool) == Some(false) {
-        return Err(format!("{part} is not a closed solid"));
-    }
-    let bb = body.get("bbox").ok_or("the part has no bounding box")?;
-    let v3 = |k: &str| -> Result<[f64; 3], String> {
-        let a = bb.get(k).and_then(Value::as_array).ok_or("bad bounding box")?;
-        Ok([a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0), a[2].as_f64().unwrap_or(0.0)])
-    };
-    let (lo, hi) = (v3("min")?, v3("max")?);
-    let c = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])];
-    let (zmin, zmax) = (lo[2], hi[2]);
-    let h = zmax - zmin;
-    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + h.powi(2)).sqrt();
-    if h < 5.0 {
-        return Err(format!("{part} is too flat to mould ({h:.1} mm tall)"));
-    }
+fn names(v: &Value) -> Vec<String> {
+    v.get("bodies")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|b| b.get("name").and_then(Value::as_str).map(String::from)).collect())
+        .unwrap_or_default()
+}
 
-    // Coarse enough to stay inside the host's mesh budget; the split radii keep a margin for it.
+fn v3(v: Option<&Value>) -> Option<V3> {
+    let a = v?.as_array()?;
+    Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+}
+
+fn bbox<R: Runner>(r: &mut R, body: &str, calls: &mut usize) -> Result<(V3, V3, Value), String> {
+    *calls += 1;
+    let m = r.run("inspect.measure", json!({"bodies": [body]}))?;
+    let b = m.get("bodies").and_then(|b| b.get(0)).cloned().ok_or_else(|| format!("Couldn't measure \"{body}\"."))?;
+    let bb = b.get("bbox").ok_or("The part has no size.")?;
+    let (lo, hi) = (v3(bb.get("min")).ok_or("The part has no size.")?, v3(bb.get("max")).ok_or("The part has no size.")?);
+    Ok((lo, hi, b))
+}
+
+/// Find the part and its open face, turn a working copy so the open face faces down (-Z), and
+/// read its mesh.
+pub fn prepare<R: Runner>(r: &mut R, p: &Params) -> Result<Prep, String> {
+    let mut calls = 0;
+    calls += 1;
+    let sel = r.run("selection.get", json!({"detail": true}))?;
+    let items: Vec<Value> = sel.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let kind = |it: &Value| it.get("kind").or_else(|| it.get("type")).and_then(Value::as_str).unwrap_or("").to_string();
+    calls += 1;
+    let existing = names(&r.run("inspect.measure", json!({"names_only": true}))?);
+    let picked_body = items.iter().find_map(|it| match kind(it).as_str() {
+        "body" => it.get("name").and_then(Value::as_str).map(String::from),
+        "face" | "edge" | "vertex" => it.get("body").and_then(Value::as_str).map(String::from),
+        _ => None,
+    });
+    let source = if !p.part.is_empty() {
+        if !existing.iter().any(|n| *n == p.part) {
+            return Err(format!("There's no body called \"{}\". Check Part body, or leave it empty and select the part.", p.part));
+        }
+        p.part.clone()
+    } else if let Some(b) = picked_body {
+        b
+    } else {
+        match existing.len() {
+            1 => existing[0].clone(),
+            0 => return Err("The design has no body to mould.".into()),
+            _ => return Err("Select the part to mould (or its open face), or type its body name in Part body.".into()),
+        }
+    };
+    // A face of the part, selected: the open face.
+    let face = items.iter().find(|it| kind(it) == "face" && it.get("body").and_then(Value::as_str) == Some(source.as_str()));
+    let open = match face {
+        None => None,
+        Some(f) => {
+            if f.get("planar").and_then(Value::as_bool) != Some(true) {
+                return Err("The open face must be flat. Select a flat face of the part, or select the whole part to use its bottom face.".into());
+            }
+            let s = f.get("surface");
+            let n = v3(s.and_then(|s| s.get("normal"))).ok_or("The selected face has no direction.")?;
+            let o = v3(f.get("point")).or_else(|| v3(s.and_then(|s| s.get("point")))).ok_or("The selected face has no position.")?;
+            Some((geom::unit(n), o))
+        }
+    };
+    let (lo0, hi0, body) = bbox(r, &source, &mut calls)?;
+    if body.get("closed").and_then(Value::as_bool) == Some(false) {
+        return Err(format!("\"{source}\" isn't a closed solid, so it has no inside to mould round."));
+    }
+    let mut part = source.clone();
+    let (mut lo, mut hi) = (lo0, hi0);
+    let mut turn = None;
+    if let Some((n, o)) = open {
+        let rot = Rot::between(n, [0.0, 0.0, -1.0]);
+        if !rot.is_none() {
+            let base = "Mould working copy";
+            let mut name = base.to_string();
+            let mut k = 2;
+            while existing.iter().any(|e| *e == name) {
+                name = format!("{base} {k}");
+                k += 1;
+            }
+            calls += 1;
+            let v = r.run(
+                "solid.move",
+                json!({"bodies": [source], "copy": true, "axis": rot.axis, "angle": format!("{} deg", rot.deg), "origin": o, "body_name": name}),
+            )?;
+            part = build::created(&v).into_iter().next().ok_or("Couldn't turn a copy of the part.")?;
+            (lo, hi, _) = bbox(r, &part, &mut calls)?;
+            turn = Some((rot, o));
+        }
+        let below = o[2] - lo[2];
+        if below > 0.5 {
+            return Err(format!(
+                "The selected face isn't the part's open face: {below:.0} mm of the part lies beyond it. Select the face you trowel, \
+                 which must be the part's lowest face when it stands on it."
+            ));
+        }
+    }
+    let h = hi[2] - lo[2];
+    if h < 5.0 {
+        return Err(format!("\"{source}\" is too flat to mould ({h:.1} mm thick)."));
+    }
+    let diag = geom::norm(geom::sub(hi, lo));
+    // Coarse enough to stay inside the host's mesh budget; every split keeps a margin for it.
     let tol = (diag / 600.0).clamp(0.2, 25.0);
+    calls += 1;
     let mesh = r.run("model.mesh", json!({"body": part, "tolerance": tol}))?;
-    let pos: Vec<[f64; 3]> = mesh
+    let pos: Vec<V3> = mesh
         .get("positions")
         .and_then(Value::as_array)
-        .ok_or("model.mesh returned no positions")?
+        .ok_or("Couldn't read the part's shape (no mesh).")?
         .iter()
-        .map(|q| {
-            let a = q.as_array().cloned().unwrap_or_default();
-            [a.first().and_then(Value::as_f64).unwrap_or(0.0), a.get(1).and_then(Value::as_f64).unwrap_or(0.0), a.get(2).and_then(Value::as_f64).unwrap_or(0.0)]
-        })
+        .map(|q| v3(Some(q)).unwrap_or([0.0; 3]))
         .collect();
     let tri: Vec<[usize; 3]> = mesh
         .get("triangles")
         .and_then(Value::as_array)
-        .ok_or("model.mesh returned no triangles")?
+        .ok_or("Couldn't read the part's shape (no mesh).")?
         .iter()
         .map(|t| {
             let a = t.as_array().cloned().unwrap_or_default();
             [0, 1, 2].map(|i| a.get(i).and_then(Value::as_u64).unwrap_or(0) as usize)
         })
         .collect();
+    Ok(Prep { source, part, turn, lo, hi, mesh: geom::Mesh { pos, tri }, tol, existing, calls })
+}
+
+/// Round mould. Builds everything in one run if it fits the host's limits; if not, the jacket
+/// now and the back plate on the next run (which finds the jacket already there).
+pub fn round_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
+    validate(p).map_err(|(_, why)| why)?;
+    r.progress(0.02, "reading the part");
+    let prep = prepare(r, p)?;
+    let (lo, hi) = (prep.lo, prep.hi);
+    let part = prep.part.clone();
+    let c = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])];
+    let (zmin, zmax) = (lo[2], hi[2]);
+    let h = zmax - zmin;
+    let tol = prep.tol;
     r.progress(0.04, "analysing the profile");
     let n_levels = ((h / tol).ceil() as usize).clamp(40, 240);
-    let prof = analysis::profile(&analysis::Mesh { pos, tri }, c, zmin, zmax, n_levels, 180);
+    let amesh = analysis::Mesh { pos: prep.mesh.pos.clone(), tri: prep.mesh.tri.clone() };
+    let prof = analysis::profile(&amesh, c, zmin, zmax, n_levels, 180);
     let zj = zmax - 0.5f64.min(h * 0.01);
     let margin = tol + 1.5;
     let bands = analysis::jacket_bands(&prof, zj, margin)?;
@@ -241,12 +356,7 @@ pub fn rigid_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
 
     let space = analysis::Space::new(&prof, &bands);
     let space_ref = &space;
-    let env = layout::Envelope {
-        r_jacket,
-        ro,
-        jacket_h: zj - zmin,
-        plate_h: Box::new(move |r1, r2| zb - space_ref.lowest(r1, r2)),
-    };
+    let env = layout::Envelope { r_jacket, ro, jacket_h: zj - zmin, plate_h: Box::new(move |r1, r2| zb - space_ref.lowest(r1, r2)) };
     let lay = layout::choose(&env, &p.bed, if p.sectors == 0 { None } else { Some(p.sectors) })?;
     let span = 360.0 / lay.sectors as f64;
     let piece_kinds: Vec<Value> = {
@@ -271,17 +381,36 @@ pub fn rigid_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
     let pin = if p.pin_diameter > 0.0 {
         let z = zmin + p.pin_height;
         if p.pin_height - p.pin_diameter / 2.0 < 0.0 || z + p.pin_diameter / 2.0 > zmax {
-            return Err("core_pin_height: the pin must sit within the part's height".into());
+            return Err(format!(
+                "The core pin doesn't fit within the part's height ({:.0} mm). Core pin height is measured from the open face \
+                 to the hole's centre.",
+                h
+            ));
         }
         let side = (p.pin_diameter / r_jacket).to_degrees() + 3.0;
         let inner = analysis::wall_inner_near(&prof, p.pin_angle, z - p.pin_diameter / 2.0, z + p.pin_diameter / 2.0, side)
-            .ok_or("core_pin_angle: no wall found there")?;
+            .ok_or_else(|| {
+                format!(
+                    "There's no wall at Core pin angle {:.0}° and height {:.0} mm. The angle is measured from +X, counter-clockwise \
+                     seen from the back of the mould.",
+                    p.pin_angle, p.pin_height
+                )
+            })?;
         Some(build::Pin { deg: p.pin_angle, z, d: p.pin_diameter, start: (inner - p.pin_diameter).max(0.0) })
     } else {
         None
     };
     let theta0 = if pin.is_some() { p.pin_angle - span / 2.0 } else { 0.0 };
-    let spec = build::Spec {
+
+    // Which run is this? A jacket already in the design means the back plate is next.
+    let has = |base: &str| prep.existing.iter().any(|n| n.starts_with(base));
+    if has("Mould jacket") && has("Mould plate") {
+        return Err("This design already has a round mould (Mould jacket and Mould plate pieces). Undo it, or delete those \
+                    pieces, to build a new one."
+            .into());
+    }
+    let first_mode = if has("Mould jacket") { build::Build::Plate } else { build::Build::Everything };
+    let mut spec = build::Spec {
         part: part.clone(),
         c,
         zmin,
@@ -296,49 +425,66 @@ pub fn rigid_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
         bands: bands.clone(),
         layout: lay.clone(),
         theta0,
-        bolt_d: bolt_clearance(&p.bolt).unwrap(),
+        bolt_d: bolt_clearance(&p.bolt).unwrap_or(0.0),
         dowel_d: if p.dowel_diameter > 0.0 { p.dowel_diameter + 0.1 } else { 0.0 },
         pin,
-        build: build_mode(&p.build).unwrap(),
+        build: first_mode,
+        existing: prep.existing.clone(),
     };
     // Count the calls first: running out of calls or time half way discards everything.
-    let mut dry = Dry { calls: 0, next: 0 };
-    build::build(&mut dry, &spec)?;
-    let total_pieces = lay.pieces;
-    let this_run = match spec.build {
-        build::Build::Everything => total_pieces,
-        build::Build::Jacket => lay.sectors,
-        build::Build::Plate => total_pieces - lay.sectors,
+    let budget = HOST_CALLS - prep.calls - prep.finish_calls() - 1;
+    let fits = |spec: &build::Spec| -> Result<(bool, usize), String> {
+        let mut dry = Dry { calls: 0, next: 0 };
+        build::build(&mut dry, spec)?;
+        let pieces = match spec.build {
+            build::Build::Everything => lay.pieces,
+            build::Build::Jacket => lay.sectors,
+            build::Build::Plate => lay.pieces - lay.sectors,
+        };
+        Ok((dry.calls <= budget && pieces <= PIECE_BUDGET, dry.calls))
     };
-    if dry.calls > CALL_BUDGET || this_run > PIECE_BUDGET {
-        let why = if dry.calls > CALL_BUDGET {
-            format!("{} SolidCraft commands, more than one plugin run may make ({CALL_BUDGET})", dry.calls)
-        } else {
-            format!("{this_run} pieces, more than one plugin run finishes inside SolidCraft's 30 s limit")
-        };
-        let how = match spec.build {
-            build::Build::Everything => "Build it in two runs: set Build to jacket and run, then set Build to plate and run again.",
-            _ => "Use a larger printer bed setting or fewer, larger pieces is not possible here; raise the bed size if your printer allows.",
-        };
-        return Err(format!("this mould ({total_pieces} pieces) needs {why}. {how}"));
+    let (mut ok, mut calls) = fits(&spec)?;
+    if !ok && spec.build == build::Build::Everything {
+        spec.build = build::Build::Jacket;
+        (ok, calls) = fits(&spec)?;
     }
-    r.log(&format!(
-        "mould for {part}: {} sectors, rings at {:?}, centre in {}, jacket split {:?}",
-        lay.sectors, lay.rings, lay.disk_sectors, bands
-    ));
-    let built = build::build(r, &spec)?;
-    let mut warnings: Vec<String> = built.warnings.clone();
-    for (a, b) in &undercuts {
-        warnings.push(format!(
-            "the plug may lock in between {a:.0} and {b:.0} mm up: the cavity narrows going up there"
+    if !ok {
+        let what = match spec.build {
+            build::Build::Plate => "back plate",
+            _ => "jacket",
+        };
+        return Err(format!(
+            "This mould has {} pieces and its {what} alone is too big for one plugin run ({calls} SolidCraft commands; the limit is \
+             {HOST_CALLS} commands and 30 seconds). Choose a printer with a bigger bed, or a thinner Back plate.",
+            lay.pieces
         ));
     }
+    r.log(&format!("mould for {}: {} sectors, rings at {:?}, centre in {}, building {:?}", prep.source, lay.sectors, lay.rings, lay.disk_sectors, spec.build));
+    let built = build::build(r, &spec)?;
+    let mut all: Vec<String> = built.jacket.clone();
+    all.extend(built.rings.iter().flatten().cloned());
+    all.extend(built.disk.iter().cloned());
+    prep.finish(r, &all)?;
+    let mut warnings: Vec<String> = built.warnings.clone();
+    for (a, b) in &undercuts {
+        warnings.push(format!("The plug may lock in between {a:.0} and {b:.0} mm up: the cavity narrows going up there. Add draft to the part."));
+    }
     if pin_needed_hint(&prof, &bands) && p.pin_diameter == 0.0 {
-        warnings.push("the wall has an opening the jacket split crosses; a side hole needs a core pin".into());
+        warnings.push("The wall has an opening the jacket split crosses: a side hole needs a core pin.".into());
+    }
+    let next = (spec.build == build::Build::Jacket)
+        .then_some("This mould is too big for one run: the jacket is built. Run Round mould again with the same part selected to build the back plate.");
+    if let Some(n) = next {
+        r.log(n);
+    }
+    for w in &warnings {
+        r.log(w);
     }
     Ok(json!({
-        "part": part,
-        "pieces": built.jacket.len() + built.rings.iter().map(Vec::len).sum::<usize>() + built.disk.len(),
+        "part": prep.source,
+        "built": format!("{:?}", spec.build).to_lowercase(),
+        "next": next,
+        "pieces": all.len(),
         "jacket": built.jacket,
         "plate_rings": built.rings,
         "plate_centre": built.disk,
@@ -354,10 +500,33 @@ pub fn rigid_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
         "bolts": {"size": p.bolt, "count": built.bolts},
         "dowel_holes": {"diameter_mm": p.dowel_diameter, "count": built.dowels},
         "core_pin": p.pin_diameter > 0.0,
+        "turned": prep.turn.is_some(),
         "analysis_tolerance_mm": (tol * 100.0).round() / 100.0,
-        "host_calls": built.calls + 4,
+        "host_calls": built.calls + prep.calls + prep.finish_calls(),
         "warnings": warnings,
     }))
+}
+
+/// The 0.1 entry's name.
+pub fn rigid_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
+    round_mould(r, p)
+}
+
+/// Box mould: see [`boxm`].
+pub fn box_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
+    validate(p).map_err(|(_, why)| why)?;
+    r.progress(0.02, "reading the part");
+    let prep = prepare(r, p)?;
+    boxm::build(r, p, &prep)
+}
+
+/// Run an entry by name.
+pub fn run_entry<R: Runner>(r: &mut R, entry: &str, p: &Params) -> Result<Value, String> {
+    match entry {
+        "round-mould" | "rigid-mould" => round_mould(r, p),
+        "box-mould" => box_mould(r, p),
+        other => Err(format!("unknown entry {other}")),
+    }
 }
 
 /// An angle where the outer wall is missing over some heights (a side hole or slot).
@@ -369,7 +538,7 @@ fn pin_needed_hint(p: &analysis::Profile, bands: &[analysis::Band]) -> bool {
     })
 }
 
-fn round1(x: f64) -> f64 {
+pub(crate) fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
 }
 
@@ -396,7 +565,7 @@ mod guest {
                 Ok(s) => Ok(serde_json::from_str(&s).unwrap_or(Value::Null)),
                 Err(e) => {
                     let a = args.to_string();
-                    let msg = format!("{command} {}: {e:?}", &a[..a.len().min(700)]);
+                    let msg = format!("SolidCraft refused a step ({command}): {e:?}. Args: {}", &a[..a.len().min(500)]);
                     self.last_error = Some(e);
                     Err(msg)
                 }
@@ -413,31 +582,25 @@ mod guest {
     struct MouldMaker;
     impl exports::craft::plugin::entry::Guest for MouldMaker {
         fn execute(entry: String, params: String) -> Result<String, PluginError> {
-            match entry.as_str() {
-                "rigid-mould" => {
-                    let v: Value = serde_json::from_str(&params).unwrap_or(json!({}));
-                    let p = parse_params(&v);
-                    if let Err((field, reason)) = validate(&p) {
-                        return Err(PluginError::InvalidInput(FieldFailure { field, reason }));
-                    }
-                    let mut host = Host { last_error: None };
-                    match rigid_mould(&mut host, &p) {
-                        Ok(v) => Ok(v.to_string()),
-                        // A host refusal goes back as the host's own typed error.
-                        // Cancellation and limits keep the host's own error; anything else says
-                        // which step failed.
-                        Err(e) => Err(match host.last_error.take() {
-                            Some(PluginError::Cancelled) => PluginError::Cancelled,
-                            Some(PluginError::LimitExceeded(m)) => PluginError::LimitExceeded(m),
-                            Some(PluginError::PermissionDenied(m)) => PluginError::PermissionDenied(m),
-                            _ => PluginError::CommandFailed(CommandFailure { command: "mould-maker.rigid-mould".into(), reason: e }),
-                        }),
-                    }
-                }
-                other => Err(PluginError::InvalidInput(FieldFailure {
-                    field: "entry".into(),
-                    reason: format!("unknown entry {other}"),
-                })),
+            if !matches!(entry.as_str(), "round-mould" | "rigid-mould" | "box-mould") {
+                return Err(PluginError::InvalidInput(FieldFailure { field: "entry".into(), reason: format!("unknown entry {entry}") }));
+            }
+            let v: Value = serde_json::from_str(&params).unwrap_or(json!({}));
+            let p = parse_params(&v);
+            if let Err((field, reason)) = validate(&p) {
+                return Err(PluginError::InvalidInput(FieldFailure { field, reason }));
+            }
+            let mut host = Host { last_error: None };
+            match run_entry(&mut host, &entry, &p) {
+                Ok(v) => Ok(v.to_string()),
+                // Cancellation and limits keep the host's own error; anything else is the
+                // plugin's message, which says what to change.
+                Err(e) => Err(match host.last_error.take() {
+                    Some(PluginError::Cancelled) => PluginError::Cancelled,
+                    Some(PluginError::LimitExceeded(m)) => PluginError::LimitExceeded(m),
+                    Some(PluginError::PermissionDenied(m)) => PluginError::PermissionDenied(m),
+                    _ => PluginError::CommandFailed(CommandFailure { command: format!("mould-maker.{entry}"), reason: e }),
+                }),
             }
         }
     }
@@ -453,12 +616,24 @@ mod tests {
         let p = parse_params(&json!({}));
         assert!(validate(&p).is_ok());
         assert_eq!(p.bolt, "M6");
+        assert_eq!(p.bed.x, 300.0);
+    }
+
+    #[test]
+    fn custom_printer_uses_the_fields() {
+        let p = parse_params(&json!({"printer": "Custom", "printer_width": 250}));
+        assert_eq!(p.bed.x, 250.0);
+        let k = parse_params(&json!({"printer": "K1 Max", "printer_width": 250}));
+        assert_eq!(k.bed.x, 300.0);
     }
 
     #[test]
     fn bad_inputs_name_their_field() {
         assert_eq!(validate(&parse_params(&json!({"bolt": "M7"}))).unwrap_err().0, "bolt");
         assert_eq!(validate(&parse_params(&json!({"sectors": 1}))).unwrap_err().0, "sectors");
-        assert_eq!(validate(&parse_params(&json!({"flange_width": 14, "bolt": "M8"}))).unwrap_err().0, "flange_width");
+        let e = validate(&parse_params(&json!({"flange_width": 14, "bolt": "M8"}))).unwrap_err();
+        assert_eq!(e.0, "flange_width");
+        assert!(e.1.contains("at least 23 mm for M8 bolts"), "{}", e.1);
+        assert!(validate(&parse_params(&json!({"bolt": "None", "dowel_diameter": 0, "flange_width": 12}))).is_ok());
     }
 }

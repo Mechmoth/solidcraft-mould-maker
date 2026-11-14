@@ -152,8 +152,10 @@ pub fn choose(env: &Envelope, bed: &Bed, forced: Option<usize>) -> Result<Layout
         }
     }
     best.ok_or_else(|| match forced {
-        Some(n) => format!("with {n} sectors some pieces do not fit the printer; set sectors to 0 to choose automatically"),
-        None => "no layout of up to 64 sectors fits this printer; the part is too tall or the bed too small".into(),
+        Some(n) => format!("With Sectors set to {n}, some pieces don't fit your printer. Set Sectors to 0 to let the plugin choose."),
+        None => "No split into up to 64 sectors fits your printer: the part is too tall for the bed. \
+                 Choose Custom under Printer and enter a bigger build volume, or lower Back plate."
+            .into(),
     })
 }
 

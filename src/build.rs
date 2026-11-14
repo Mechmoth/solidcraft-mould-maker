@@ -59,6 +59,8 @@ pub struct Spec {
     pub dowel_d: f64,
     pub pin: Option<Pin>,
     pub build: Build,
+    /// Bodies already in the design, so new names never clash.
+    pub existing: Vec<String>,
 }
 
 pub struct Built {
@@ -82,7 +84,7 @@ struct B<'a, R: Runner> {
     k: usize,
 }
 
-fn created(v: &Value) -> Vec<String> {
+pub(crate) fn created(v: &Value) -> Vec<String> {
     v.get("created_bodies")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
@@ -177,7 +179,7 @@ impl<'a, R: Runner> B<'a, R> {
 }
 
 /// Evenly spaced positions in [a, b], about `pitch` apart, at least `min`.
-fn spread(a: f64, b: f64, pitch: f64, min: usize) -> Vec<f64> {
+pub(crate) fn spread(a: f64, b: f64, pitch: f64, min: usize) -> Vec<f64> {
     if b < a {
         return vec![];
     }
@@ -189,7 +191,7 @@ fn spread(a: f64, b: f64, pitch: f64, min: usize) -> Vec<f64> {
 }
 
 /// Midpoints between consecutive positions (one dowel per gap), or the middle if only one.
-fn between(v: &[f64]) -> Vec<f64> {
+pub(crate) fn between(v: &[f64]) -> Vec<f64> {
     if v.len() < 2 {
         return v.to_vec();
     }
@@ -211,12 +213,7 @@ pub fn build<R: Runner>(r: &mut R, s: &Spec) -> Result<Built, String> {
     // Every region is made under its final name, so sector copies come out as `Name (2)`,
     // `Name (3)`… by themselves. (body.rename inside a plugin run, after an earlier plugin result
     // was adopted, trips a name-following bug in SolidCraft 0.41, so nothing here renames.)
-    let existing: Vec<String> = b
-        .run("inspect.measure", json!({"names_only": true}))?
-        .get("bodies")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.get("name").and_then(Value::as_str).map(String::from)).collect())
-        .unwrap_or_default();
+    let existing = &s.existing;
     let free = |base: &str| -> String {
         let clash = |c: &str| existing.iter().any(|e| e == c || e.starts_with(&format!("{c} (")));
         if !clash(base) {
@@ -265,11 +262,13 @@ pub fn build<R: Runner>(r: &mut R, s: &Spec) -> Result<Built, String> {
         let loose = created(&b.combine(&body, &[jt.clone()], if jacket { "intersect" } else { "cut" }, true)?);
         if !loose.is_empty() {
             return Err(if jacket {
-                "the jacket would come apart in separate rings; the part's outside is not one continuous wall".to_string()
+                "The jacket would come apart in separate rings because the part's outside isn't one continuous wall. \
+                 Use Plugins › Box mould…, or fill the gap in the part's outside."
+                    .to_string()
             } else {
                 format!(
-                    "the back plate would come apart in {} pieces, so the plug cannot lift out with it. Stand the part \
-                     with its open face down: the face you trowel is the part's lowest face, its cavity opening upwards",
+                    "The back plate would come apart in {} pieces, so it couldn't lift off. The open face is probably \
+                     wrong: select the face you trowel before running, or stand the part on it.",
                     loose.len() + 1
                 )
             });
@@ -406,6 +405,9 @@ pub fn build<R: Runner>(r: &mut R, s: &Spec) -> Result<Built, String> {
         let mut drills = Vec::new();
         for (is_bolt, p, ax) in &holes {
             let dia = if *is_bolt { s.bolt_d } else { s.dowel_d };
+            if dia <= 0.0 {
+                continue;
+            }
             let base = [p[0] - ax[0] * len / 2.0, p[1] - ax[1] * len / 2.0, p[2] - ax[2] * len / 2.0];
             drills.push(b.first("solid.cylinder", json!({"diameter": dia, "height": len, "base": base, "axis": ax, "body_name": "Drill"}))?);
         }
@@ -446,8 +448,9 @@ pub fn build<R: Runner>(r: &mut R, s: &Spec) -> Result<Built, String> {
     let mut dowels = 0usize;
     // Count each joint once: an edge row is shared by two pieces, a ring or split tab's holes
     // by the pieces either side of it.
+    let has_bolts = s.bolt_d > 0.0;
     let mut count = |holes: &[Hole], joints: usize| {
-        bolts += joints * holes.iter().filter(|h| h.0).count();
+        bolts += if has_bolts { joints * holes.iter().filter(|h| h.0).count() } else { 0 };
         dowels += joints * holes.iter().filter(|h| !h.0).count();
     };
     let jz = spread(zlo + 25.0, s.zj - f - 15.0, 200.0, 2);

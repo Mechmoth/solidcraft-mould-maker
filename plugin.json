@@ -1,8 +1,8 @@
 {
   "id": "mould-maker",
   "name": "Mould Maker",
-  "version": "0.1.0",
-  "description": "Printed rigid moulds for round parts: jacket, back plate and plug split to fit your printer, with flange tabs, bolt and dowel holes.",
+  "version": "0.2.0",
+  "description": "Printed rigid moulds, bolted together and sized to your printer. Round mould: bowls, planters, birdbaths. Box mould: flat-sided parts. Big round moulds take two runs: if only the jacket appears, run again for the back plate.",
   "capabilities": [
     "commands@0.1"
   ],
@@ -10,11 +10,18 @@
     "module": "plugin.wasm",
     "entries": [
       {
-        "name": "rigid-mould",
+        "name": "round-mould",
         "effect": "edit",
+        "slots": [
+          {
+            "kind": "menu",
+            "name": "Round mould…"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "required": [
+            "printer",
             "printer_width",
             "printer_depth",
             "printer_height",
@@ -24,154 +31,299 @@
             "flange_thickness",
             "bolt",
             "dowel_diameter",
-            "build"
+            "sectors",
+            "core_pin_diameter",
+            "core_pin_angle",
+            "core_pin_height"
           ],
           "properties": {
+            "printer": {
+              "type": "string",
+              "title": "Printer",
+              "description": "K1 Max: 300 × 300 × 300 mm build volume. Custom: the plugin uses Bed width, Bed depth and Bed height below. Every piece is made to fit this printer.",
+              "enum": [
+                "K1 Max",
+                "Custom"
+              ],
+              "default": "K1 Max"
+            },
             "printer_width": {
               "type": "number",
-              "title": "Printer bed width",
-              "description": "Build plate X",
+              "title": "Bed width",
+              "description": "Only used when Printer is Custom: the usable width (X) of your printer's bed.",
               "default": 300,
               "minimum": 50,
               "maximum": 2000,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "printer_depth": {
               "type": "number",
-              "title": "Printer bed depth",
-              "description": "Build plate Y",
+              "title": "Bed depth",
+              "description": "Only used when Printer is Custom: the usable depth (Y) of your printer's bed.",
               "default": 300,
               "minimum": 50,
               "maximum": 2000,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "printer_height": {
               "type": "number",
-              "title": "Printer height",
-              "description": "Build height Z",
+              "title": "Bed height",
+              "description": "Only used when Printer is Custom: the tallest print your printer can make (Z).",
               "default": 300,
               "minimum": 50,
               "maximum": 2000,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "wall": {
               "type": "number",
               "title": "Wall",
-              "description": "Mould wall outside the part's widest point",
+              "description": "Mould thickness round the outside of the part. Thicker is stiffer but uses more plastic.",
               "default": 20,
               "minimum": 5,
               "maximum": 200,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "back_plate": {
               "type": "number",
               "title": "Back plate",
-              "description": "Plate thickness over the part's top (the side opposite the open face)",
+              "description": "Thickness of the plate that closes the mould on the side opposite the open face (the face you pour into and trowel).",
               "default": 20,
               "minimum": 5,
               "maximum": 200,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "flange_width": {
               "type": "number",
               "title": "Flange width",
-              "description": "How far the bolting tabs stand off the mould",
+              "description": "How far the bolting flanges stand out from the mould. Needs at least 2.5 × the bolt hole, so the bolt has material round it.",
               "default": 25,
               "minimum": 12,
               "maximum": 100,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "flange_thickness": {
               "type": "number",
               "title": "Flange thickness",
-              "description": "Both tabs of a joint together",
+              "description": "Both flanges of a joint together: each piece's flange is half this.",
               "default": 16,
               "minimum": 6,
               "maximum": 60,
+              "multipleOf": 1,
               "unit": "mm"
             },
             "bolt": {
               "type": "string",
               "title": "Bolts",
-              "description": "Clearance holes for this size",
+              "description": "Clearance holes in the flanges for M4 (4.5 mm), M5 (5.5), M6 (6.6) or M8 (9.0) bolts, about 150 mm apart. None: no bolt holes, for quick-release clamps.",
               "enum": [
                 "M4",
                 "M5",
                 "M6",
-                "M8"
+                "M8",
+                "None"
               ],
               "default": "M6"
             },
             "dowel_diameter": {
               "type": "number",
               "title": "Dowel pins",
-              "description": "Registration dowel diameter (hole is 0.1 mm larger); 0 for none",
+              "description": "One dowel hole per joint (0.1 mm over this size) so the pieces line up the same way every time. 0 for no dowels.",
               "default": 6,
               "minimum": 0,
               "maximum": 16,
+              "multipleOf": 0.1,
               "unit": "mm"
             },
             "sectors": {
               "type": "integer",
               "title": "Sectors",
-              "description": "Pieces round the jacket; 0 picks the fewest pieces that fit the printer",
+              "description": "How many pieces round the jacket. 0: the plugin picks the fewest pieces that fit your printer.",
               "default": 0,
               "minimum": 0,
               "maximum": 64
             },
-            "part": {
-              "type": "string",
-              "title": "Part body",
-              "description": "Leave empty to use the selected body (or the only body)",
-              "default": "",
-              "maxLength": 80
-            },
             "core_pin_diameter": {
               "type": "number",
               "title": "Core pin diameter",
-              "description": "For one horizontal side hole; 0 for none",
+              "description": "Fills one round side hole through the part's wall so concrete can't run into it. 0 for no core pin.",
               "default": 0,
               "minimum": 0,
               "maximum": 300,
+              "multipleOf": 0.5,
               "unit": "mm"
             },
             "core_pin_angle": {
               "type": "number",
               "title": "Core pin angle",
-              "description": "Direction of the side hole, from +X towards +Y",
+              "description": "Direction of the side hole round the part, in degrees from +X towards +Y, seen from the back of the mould.",
               "default": 0,
               "minimum": -360,
               "maximum": 360,
+              "multipleOf": 1,
               "unit": "°"
             },
             "core_pin_height": {
               "type": "number",
               "title": "Core pin height",
-              "description": "Hole centre above the part's bottom face",
+              "description": "Height of the side hole's centre, measured from the open face.",
               "default": 0,
               "minimum": 0,
               "maximum": 5000,
+              "multipleOf": 0.5,
               "unit": "mm"
             },
-            "build": {
+            "part": {
               "type": "string",
-              "title": "Build",
-              "description": "A big mould can be built in two runs: jacket, then plate",
-              "enum": [
-                "everything",
-                "jacket",
-                "plate"
-              ],
-              "default": "everything"
+              "title": "Part body",
+              "description": "The part to mould. Leave empty to use the selection: select the part, or click its open face (the flat face you pour into and trowel) to choose that face. With the whole part selected the open face is its bottom.",
+              "default": "",
+              "maxLength": 80
             }
           }
-        },
+        }
+      },
+      {
+        "name": "box-mould",
+        "effect": "edit",
         "slots": [
           {
             "kind": "menu",
-            "name": "Printed rigid mould…"
+            "name": "Box mould…"
           }
-        ]
+        ],
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "printer",
+            "printer_width",
+            "printer_depth",
+            "printer_height",
+            "wall",
+            "back_plate",
+            "flange_width",
+            "flange_thickness",
+            "bolt",
+            "dowel_diameter"
+          ],
+          "properties": {
+            "printer": {
+              "type": "string",
+              "title": "Printer",
+              "description": "K1 Max: 300 × 300 × 300 mm build volume. Custom: the plugin uses Bed width, Bed depth and Bed height below. Every piece is made to fit this printer.",
+              "enum": [
+                "K1 Max",
+                "Custom"
+              ],
+              "default": "K1 Max"
+            },
+            "printer_width": {
+              "type": "number",
+              "title": "Bed width",
+              "description": "Only used when Printer is Custom: the usable width (X) of your printer's bed.",
+              "default": 300,
+              "minimum": 50,
+              "maximum": 2000,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "printer_depth": {
+              "type": "number",
+              "title": "Bed depth",
+              "description": "Only used when Printer is Custom: the usable depth (Y) of your printer's bed.",
+              "default": 300,
+              "minimum": 50,
+              "maximum": 2000,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "printer_height": {
+              "type": "number",
+              "title": "Bed height",
+              "description": "Only used when Printer is Custom: the tallest print your printer can make (Z).",
+              "default": 300,
+              "minimum": 50,
+              "maximum": 2000,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "wall": {
+              "type": "number",
+              "title": "Wall",
+              "description": "Mould thickness round the outside of the part. Thicker is stiffer but uses more plastic.",
+              "default": 20,
+              "minimum": 5,
+              "maximum": 200,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "back_plate": {
+              "type": "number",
+              "title": "Back plate",
+              "description": "Thickness of the plate that closes the mould on the side opposite the open face (the face you pour into and trowel).",
+              "default": 20,
+              "minimum": 5,
+              "maximum": 200,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "flange_width": {
+              "type": "number",
+              "title": "Flange width",
+              "description": "How far the bolting flanges stand out from the mould. Needs at least 2.5 × the bolt hole, so the bolt has material round it.",
+              "default": 25,
+              "minimum": 12,
+              "maximum": 100,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "flange_thickness": {
+              "type": "number",
+              "title": "Flange thickness",
+              "description": "Both flanges of a joint together: each piece's flange is half this.",
+              "default": 16,
+              "minimum": 6,
+              "maximum": 60,
+              "multipleOf": 1,
+              "unit": "mm"
+            },
+            "bolt": {
+              "type": "string",
+              "title": "Bolts",
+              "description": "Clearance holes in the flanges for M4 (4.5 mm), M5 (5.5), M6 (6.6) or M8 (9.0) bolts, about 150 mm apart. None: no bolt holes, for quick-release clamps.",
+              "enum": [
+                "M4",
+                "M5",
+                "M6",
+                "M8",
+                "None"
+              ],
+              "default": "M6"
+            },
+            "dowel_diameter": {
+              "type": "number",
+              "title": "Dowel pins",
+              "description": "One dowel hole per joint (0.1 mm over this size) so the pieces line up the same way every time. 0 for no dowels.",
+              "default": 6,
+              "minimum": 0,
+              "maximum": 16,
+              "multipleOf": 0.1,
+              "unit": "mm"
+            },
+            "part": {
+              "type": "string",
+              "title": "Part body",
+              "description": "The part to mould. Leave empty to use the selection: select the part, or click its open face (the flat face you pour into and trowel) to choose that face. With the whole part selected the open face is its bottom.",
+              "default": "",
+              "maxLength": 80
+            }
+          }
+        }
       }
     ],
     "commands": [
@@ -184,7 +336,10 @@
       "solid.combine",
       "solid.pattern.circular",
       "solid.remove",
-      "body.rename"
+      "sketch.create",
+      "sketch.line",
+      "sketch.finish",
+      "solid.extrude"
     ],
     "limits": {
       "fuel": 20000000000,
