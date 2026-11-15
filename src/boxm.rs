@@ -124,18 +124,73 @@ fn joints(fr: &Frame) -> Vec<(V3, V3, V3, f64, f64)> {
     v
 }
 
-struct Bx<'a, R: Runner> {
-    r: &'a mut R,
-    calls: usize,
-    k: usize,
+pub(crate) struct Bx<'a, R: Runner> {
+    pub(crate) r: &'a mut R,
+    pub(crate) calls: usize,
+    pub(crate) k: usize,
+}
+
+/// An ear's size: half thickness, width out from the mould, how far it reaches into the wall,
+/// gap left at the split, and its holes.
+pub(crate) struct EarSpec {
+    pub f: f64,
+    pub fw: f64,
+    pub ov: f64,
+    pub eps: f64,
+    pub bolt_d: f64,
+    pub dowel_d: f64,
 }
 
 impl<R: Runner> Bx<'_, R> {
-    fn run(&mut self, cmd: &str, args: Value) -> Result<Value, String> {
+    /// A bolting ear on a joint: two half slabs, one each side of the joint plane, drilled
+    /// together and placed. `o` is a point on the joint's outer edge, `e` runs along the edge, `u`
+    /// points out of the mould in the joint plane; the first half is on the `u × e` side.
+    /// Returns the two halves and the bolt and dowel counts.
+    pub(crate) fn ear(&mut self, s: &EarSpec, o: V3, e: V3, u: V3, b0: f64, b1: f64, row: &[(bool, f64)]) -> Result<(String, String, usize, usize), String> {
+        let (f, fw, ov, eps) = (s.f, s.fw, s.ov, s.eps);
+        let n = cross(u, e);
+        let ha = self.first("solid.box", json!({"corner": [-ov, b0, eps], "length": fw + ov, "width": b1 - b0, "height": f - eps, "body_name": "Ear"}))?;
+        let hb = self.first("solid.box", json!({"corner": [-ov, b0, -f], "length": fw + ov, "width": b1 - b0, "height": f - eps, "body_name": "Ear"}))?;
+        let mut drills = Vec::new();
+        let (mut bolts, mut dowels) = (0, 0);
+        for (is_bolt, at) in row {
+            let dia = if *is_bolt { s.bolt_d } else { s.dowel_d };
+            if dia <= 0.0 {
+                continue;
+            }
+            drills.push(self.first(
+                "solid.cylinder",
+                json!({"diameter": dia, "height": 2.0 * f + 6.0, "base": [0.5 * fw, at, -f - 3.0], "axis": [0, 0, 1], "body_name": "Drill"}),
+            )?);
+            if *is_bolt {
+                bolts += 1;
+            } else {
+                dowels += 1;
+            }
+        }
+        if !drills.is_empty() {
+            if drills.len() > 1 {
+                self.run("solid.combine", json!({"target": drills[0], "tools": drills[1..], "operation": "join", "touching": "one_body"}))?;
+            }
+            self.combine(&ha, &[drills[0].clone()], "cut", true)?;
+            self.combine(&hb, &[drills[0].clone()], "cut", false)?;
+        }
+        let rot = Rot::from_columns(u, e, n);
+        let mut mv = json!({"bodies": [ha, hb], "translate": o});
+        if !rot.is_none() {
+            mv["axis"] = json!(rot.axis);
+            mv["angle"] = json!(format!("{} deg", rot.deg));
+            mv["origin"] = json!([0, 0, 0]);
+        }
+        self.run("solid.move", mv)?;
+        Ok((ha, hb, bolts, dowels))
+    }
+
+    pub(crate) fn run(&mut self, cmd: &str, args: Value) -> Result<Value, String> {
         self.calls += 1;
         self.r.run(cmd, args)
     }
-    fn first(&mut self, cmd: &str, mut args: Value) -> Result<String, String> {
+    pub(crate) fn first(&mut self, cmd: &str, mut args: Value) -> Result<String, String> {
         if let Some(n) = args.get("body_name").and_then(Value::as_str).map(String::from) {
             self.k += 1;
             args["body_name"] = json!(format!("{n} mm{}", self.k));
@@ -143,11 +198,11 @@ impl<R: Runner> Bx<'_, R> {
         let v = self.run(cmd, args)?;
         created(&v).into_iter().next().ok_or_else(|| format!("{cmd} made no body"))
     }
-    fn named(&mut self, cmd: &str, args: Value) -> Result<String, String> {
+    pub(crate) fn named(&mut self, cmd: &str, args: Value) -> Result<String, String> {
         let v = self.run(cmd, args)?;
         created(&v).into_iter().next().ok_or_else(|| format!("{cmd} made no body"))
     }
-    fn combine(&mut self, target: &str, tools: &[String], op: &str, keep: bool) -> Result<Vec<String>, String> {
+    pub(crate) fn combine(&mut self, target: &str, tools: &[String], op: &str, keep: bool) -> Result<Vec<String>, String> {
         let v = self.run("solid.combine", json!({"target": target, "tools": tools, "operation": op, "keep_tools": keep}))?;
         Ok(created(&v))
     }
@@ -320,36 +375,10 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         if ka == kb {
             return Err(format!("internal: joint {i} has {} on both sides", NAMES[ka]));
         }
-        let ha = b.first("solid.box", json!({"corner": [-ov, b0, eps], "length": fw + ov, "width": b1 - b0, "height": f - eps, "body_name": "Ear"}))?;
-        let hb = b.first("solid.box", json!({"corner": [-ov, b0, -f], "length": fw + ov, "width": b1 - b0, "height": f - eps, "body_name": "Ear"}))?;
-        let mut drills = Vec::new();
-        for (is_bolt, at) in row {
-            let dia = if *is_bolt { bolt_d } else { dowel_d };
-            drills.push(b.first(
-                "solid.cylinder",
-                json!({"diameter": dia, "height": 2.0 * f + 6.0, "base": [0.5 * fw, at, -f - 3.0], "axis": [0, 0, 1], "body_name": "Drill"}),
-            )?);
-            if *is_bolt {
-                bolts += 1;
-            } else {
-                dowels += 1;
-            }
-        }
-        if !drills.is_empty() {
-            if drills.len() > 1 {
-                b.run("solid.combine", json!({"target": drills[0], "tools": drills[1..], "operation": "join", "touching": "one_body"}))?;
-            }
-            b.combine(&ha, &[drills[0].clone()], "cut", true)?;
-            b.combine(&hb, &[drills[0].clone()], "cut", false)?;
-        }
-        let rot = Rot::from_columns(*u, *ed, n);
-        let mut mv = json!({"bodies": [ha, hb], "translate": o});
-        if !rot.is_none() {
-            mv["axis"] = json!(rot.axis);
-            mv["angle"] = json!(format!("{} deg", rot.deg));
-            mv["origin"] = json!([0, 0, 0]);
-        }
-        b.run("solid.move", mv)?;
+        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d };
+        let (ha, hb, nb, nd) = b.ear(&es, *o, *ed, *u, b0, b1, row)?;
+        bolts += nb;
+        dowels += nd;
         ears[ka].push(ha);
         ears[kb].push(hb);
     }

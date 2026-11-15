@@ -15,6 +15,14 @@ the plugin.
   cavity, cut into rings and sectors that lift off. Optional core pin for one side hole.
 - **Plugins › Box mould…** for parts with flat or gently curved sides: four walls that pull
   straight off sideways and a back that lifts off, split on mitres at the corners.
+- **Plugins › Silicone sleeve mould…** for parts a rigid mould can't release (flutes, texture,
+  undercuts): a printed plug (the part), a sleeve split in two across the part's narrow sides,
+  and a base plate. Stand the plug on the base, bolt the sleeve round it and pour silicone to the
+  sleeve's rim; then turn it over, take the plug out and cast concrete into the silicone liner.
+  The sleeve's inside follows the part's outline grown by the silicone thickness and tapers at no
+  more than the part's own draft, with a lip at the open end. Round holes across the part get a
+  hole through the sleeve for a steel rod; holes along it get a socket in the base plate. The run
+  reports the silicone needed and the rods.
 
 Both put flanges on the outside of every joint, never on a casting face, with clearance holes
 for M4, M5, M6 or M8 bolts (or none, for clamps) and one dowel hole per joint, and size every
@@ -55,7 +63,7 @@ finishes, so watch for the back plate missing.)
 | Core pin diameter / angle / height (round) | 0 | One side hole: diameter, direction from +X, centre height from the open face |
 | Part body | (selection) | Body name if nothing is selected |
 
-## Limits (v0.2)
+## Limits (v0.3)
 
 - Round mould: round parts only. A square or strongly oval part is refused with a message
   pointing to Box mould. The plug must lift straight out: a cavity that narrows going up is
@@ -64,6 +72,9 @@ finishes, so watch for the back plate missing.)
   straight back. The plugin checks this first and names the place if not. Recesses in the open
   face (pad seats, say) can't be cast with an open mould: they come out solid. Walls are not
   split into strips yet: a piece bigger than the printer is refused.
+- Silicone sleeve mould: the plug isn't drilled or changed, because parts imported from
+  SolidWorks STEP can carry edge gaps SolidCraft 0.41's booleans refuse. The same bug stops
+  Round and Box mould on such parts.
 - Pieces are solid. Print them with low infill; hollowing is planned.
 - No gussets, seal grooves or piece numbers yet.
 - The part is read from a coarse mesh (about 1/600 of its size), and round splits keep that much
@@ -94,6 +105,10 @@ logic natively against `solidcraft-cli mcp --headless` and times every command.
   unique name.
 - A boolean's cost is mostly per tool body and per hole, not per call, so holes are drilled into
   small tab bodies and each piece gets one join.
+- Booleans on a body imported from SolidWorks STEP (edge gaps up to 0.001 mm, accepted on import)
+  fail SolidCraft's own result check ("Vertex-Face Gap exceeds XSectTol3d", tolerance 0.00001 mm),
+  and `body.repair` says there is nothing to repair.
+- The manifest may be at most 16 KB and its description 240 characters.
 - An edit entry that succeeds shows only "finished": its result, warnings and log are not shown,
   so a plugin can't tell the user what to do next.
 

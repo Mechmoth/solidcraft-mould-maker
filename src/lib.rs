@@ -15,6 +15,7 @@ pub mod boxm;
 pub mod build;
 pub mod geom;
 pub mod layout;
+pub mod silicone;
 
 use geom::{Rot, V3};
 use serde_json::{json, Value};
@@ -49,6 +50,7 @@ pub struct Params {
     pub pin_diameter: f64,
     pub pin_angle: f64,
     pub pin_height: f64,
+    pub silicone: f64,
 }
 
 /// Clearance hole for a bolt size; `Some(0.0)` for no bolts (clamps); `None` if unknown.
@@ -83,6 +85,7 @@ pub fn parse_params(v: &Value) -> Params {
         pin_diameter: num("core_pin_diameter", 0.0),
         pin_angle: num("core_pin_angle", 0.0),
         pin_height: num("core_pin_height", 0.0),
+        silicone: num("silicone_thickness", 10.0),
     }
 }
 
@@ -102,6 +105,7 @@ pub fn validate(p: &Params) -> Result<(), (String, String)> {
         ("flange_thickness", "Flange thickness", p.flange_thickness, 6.0, 60.0),
         ("dowel_diameter", "Dowel pins", p.dowel_diameter, 0.0, 16.0),
         ("core_pin_diameter", "Core pin diameter", p.pin_diameter, 0.0, 300.0),
+        ("silicone_thickness", "Silicone thickness", p.silicone, 5.0, 40.0),
     ] {
         if !(v.is_finite() && v >= lo && v <= hi) {
             return bad(f, format!("{label} must be between {lo} and {hi} mm."));
@@ -520,11 +524,20 @@ pub fn box_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
     boxm::build(r, p, &prep)
 }
 
+/// Silicone sleeve mould: see [`silicone`].
+pub fn silicone_mould<R: Runner>(r: &mut R, p: &Params) -> Result<Value, String> {
+    validate(p).map_err(|(_, why)| why)?;
+    r.progress(0.02, "reading the part");
+    let prep = prepare(r, p)?;
+    silicone::build(r, p, &prep)
+}
+
 /// Run an entry by name.
 pub fn run_entry<R: Runner>(r: &mut R, entry: &str, p: &Params) -> Result<Value, String> {
     match entry {
         "round-mould" | "rigid-mould" => round_mould(r, p),
         "box-mould" => box_mould(r, p),
+        "silicone-mould" => silicone_mould(r, p),
         other => Err(format!("unknown entry {other}")),
     }
 }
@@ -582,7 +595,7 @@ mod guest {
     struct MouldMaker;
     impl exports::craft::plugin::entry::Guest for MouldMaker {
         fn execute(entry: String, params: String) -> Result<String, PluginError> {
-            if !matches!(entry.as_str(), "round-mould" | "rigid-mould" | "box-mould") {
+            if !matches!(entry.as_str(), "round-mould" | "rigid-mould" | "box-mould" | "silicone-mould") {
                 return Err(PluginError::InvalidInput(FieldFailure { field: "entry".into(), reason: format!("unknown entry {entry}") }));
             }
             let v: Value = serde_json::from_str(&params).unwrap_or(json!({}));

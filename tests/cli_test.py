@@ -119,6 +119,8 @@ def main():
         reps.append(r1)
     if entry == "box-mould":
         return check_box(h, part, reps[-1], params)
+    if entry == "silicone-mould":
+        return check_silicone(h, part, reps[-1])
     check(reps[-1].get("next") is None, "the last run says nothing is left to build")
     rep = reps[-1]
     rep = dict(rep, jacket=[p for r in reps for p in r["jacket"]],
@@ -173,6 +175,25 @@ def finish(h):
             h.tool("screenshot", view=view, grid=False, axes=False, width=1400, height=1000, path=os.path.join(out, f"mould-{view}.png"))
     print("FAILED" if check.failed else "ALL PASSED")
     sys.exit(1 if check.failed else 0)
+
+
+def check_silicone(h, part, rep):
+    pieces = [rep["plug"]] + rep["sleeve"] + [rep["base"]]
+    after = h.tool("measure", summary=True)
+    bodies = {b["name"]: b for b in after["bodies"]}
+    check(sorted(set(bodies) - {part}) == sorted(pieces), f"plug, two sleeve halves and base plate: {sorted(set(bodies) - {part})}")
+    check(all(bodies[p]["closed"] for p in pieces), "every piece is a closed solid")
+    check(abs(bodies[rep["plug"]]["volume_mm3"] - bodies[part]["volume_mm3"]) < 1.0, "the plug is the part")
+    inter = h.ex("inspect.interference", bodies=pieces)
+    clashes = [c for c in inter["interferences"] if c.get("volume_mm3", 1) > 0.01]
+    check(not clashes, f"no piece overlaps another ({clashes[:3]})")
+    for s in rep["sizes"]:
+        check(all(a <= 300.01 for a in s["size_mm"]), f"{s['piece']} {s['size_mm']} fits the printer")
+    print("silicone:", rep["silicone"], "rods:", rep["rods"], "warnings:", rep["warnings"])
+    h.tool("undo")
+    check([b["name"] for b in h.tool("measure", names_only=True)["bodies"]] == [part], "one undo step removes the whole mould")
+    h.tool("redo")
+    finish(h)
 
 
 def check_box(h, part, rep, params):

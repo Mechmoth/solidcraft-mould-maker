@@ -201,6 +201,24 @@ impl<'a> AxisRays<'a> {
     }
 }
 
+impl AxisRays<'_> {
+    /// All the distances at which a ray from `p` along an axis crosses the part.
+    pub fn crossings(&self, p: V3, axis: usize, sign: f64) -> Vec<f64> {
+        let Some(cands) = self.grids[axis].at(p) else { return vec![] };
+        let mut d = [0.0; 3];
+        d[axis] = sign;
+        let mut t: Vec<f64> = cands.iter().filter_map(|&t| ray_tri(p, d, self.mesh.corners(t as usize))).collect();
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // A ray through a shared edge hits both triangles: count it once.
+        t.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        t
+    }
+    /// Whether a point is inside the part (odd crossings going up).
+    pub fn inside(&self, p: V3) -> bool {
+        self.crossings(p, 2, 1.0).len() % 2 == 1
+    }
+}
+
 /// Möller–Trumbore: the distance along `d` to the triangle, if the ray hits it.
 pub fn ray_tri(o: V3, d: V3, [a, b, c]: [V3; 3]) -> Option<f64> {
     let e1 = sub(b, a);
@@ -223,6 +241,109 @@ pub fn ray_tri(o: V3, d: V3, [a, b, c]: [V3; 3]) -> Option<f64> {
     }
     let t = dot(e2, q) * inv;
     (t > 0.0).then_some(t)
+}
+
+
+pub type P2 = [f64; 2];
+
+/// Convex hull, counter-clockwise, no repeated end point (Andrew's monotone chain).
+pub fn hull(points: &[P2]) -> Vec<P2> {
+    let mut p: Vec<P2> = points.to_vec();
+    p.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    p.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+    if p.len() < 3 {
+        return p;
+    }
+    let turn = |o: P2, a: P2, b: P2| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let mut h: Vec<P2> = Vec::new();
+    for pass in 0..2 {
+        let start = h.len();
+        let it: Box<dyn Iterator<Item = &P2>> = if pass == 0 { Box::new(p.iter()) } else { Box::new(p.iter().rev()) };
+        for &q in it {
+            while h.len() >= start + 2 && turn(h[h.len() - 2], h[h.len() - 1], q) <= 1e-12 {
+                h.pop();
+            }
+            h.push(q);
+        }
+        h.pop();
+    }
+    h
+}
+
+/// How far a point lies inside a convex counter-clockwise polygon (negative outside).
+pub fn inside_depth(poly: &[P2], q: P2) -> f64 {
+    let n = poly.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-12);
+            // Left of the edge is inside for counter-clockwise order.
+            (dx * (q[1] - a[1]) - dy * (q[0] - a[0])) / l
+        })
+        .fold(f64::MAX, f64::min)
+}
+
+/// A convex counter-clockwise polygon grown by `d`, its corners rounded with arcs of at most
+/// `step_deg`.
+pub fn grow(poly: &[P2], d: f64, step_deg: f64) -> Vec<P2> {
+    let n = poly.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (prev, cur, next) = (poly[(i + n - 1) % n], poly[i], poly[(i + 1) % n]);
+        let normal = |a: P2, b: P2| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-12);
+            [dy / l, -dx / l]
+        };
+        let (n0, n1) = (normal(prev, cur), normal(cur, next));
+        let (a0, mut a1) = (n0[1].atan2(n0[0]), n1[1].atan2(n1[0]));
+        while a1 < a0 {
+            a1 += std::f64::consts::TAU;
+        }
+        let k = (((a1 - a0).to_degrees() / step_deg).ceil() as usize).max(1);
+        for j in 0..=k {
+            let a = a0 + (a1 - a0) * j as f64 / k as f64;
+            out.push([cur[0] + d * a.cos(), cur[1] + d * a.sin()]);
+        }
+    }
+    // Drop points closer than 0.2 mm to the last kept one.
+    let mut kept: Vec<P2> = Vec::new();
+    for q in out {
+        if kept.last().is_none_or(|l: &P2| ((q[0] - l[0]).powi(2) + (q[1] - l[1]).powi(2)).sqrt() > 0.2) {
+            kept.push(q);
+        }
+    }
+    kept
+}
+
+/// Fewer points: drop any whose removal moves the outline by less than `tol` (convex input).
+pub fn simplify(poly: &[P2], tol: f64) -> Vec<P2> {
+    let mut p = poly.to_vec();
+    loop {
+        let n = p.len();
+        if n <= 8 {
+            return p;
+        }
+        let mut removed = false;
+        let mut i = 0;
+        while i < p.len() && p.len() > 8 {
+            let n = p.len();
+            let (a, q, b) = (p[(i + n - 1) % n], p[i], p[(i + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-12);
+            let dist = ((dx * (q[1] - a[1]) - dy * (q[0] - a[0])) / l).abs();
+            if dist < tol {
+                p.remove(i);
+                removed = true;
+            } else {
+                i += 1;
+            }
+        }
+        if !removed {
+            return p;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +380,21 @@ mod tests {
             assert!(close(r.apply([0.0, 1.0, 0.0]), e));
             assert!(close(r.apply([0.0, 0.0, 1.0]), n));
         }
+    }
+
+    #[test]
+    fn hull_and_grow() {
+        let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0], [5.0, 2.0], [3.0, 4.0]];
+        let h = hull(&pts);
+        assert_eq!(h.len(), 4);
+        assert!((inside_depth(&h, [5.0, 2.0]) - 2.0).abs() < 1e-9);
+        assert!(inside_depth(&h, [12.0, 2.0]) < 0.0);
+        let g = grow(&h, 3.0, 10.0);
+        for q in &g {
+            let d = inside_depth(&h, *q);
+            assert!(d <= -2.0 && d >= -3.0001, "{d}");
+        }
+        assert!((inside_depth(&simplify(&g, 0.05), [5.0, 2.0]) - 5.0).abs() < 0.1);
     }
 
     #[test]
