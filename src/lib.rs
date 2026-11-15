@@ -160,6 +160,8 @@ pub struct Prep {
     pub part: String,
     /// The turn taking the source onto the working copy, about `origin`.
     pub turn: Option<(Rot, V3)>,
+    /// Whether `part` is a working copy (turned, or placed out of a component) to remove at the end.
+    pub copied: bool,
     pub lo: V3,
     pub hi: V3,
     pub mesh: geom::Mesh,
@@ -172,11 +174,7 @@ pub struct Prep {
 impl Prep {
     /// Host calls `finish` will make.
     pub fn finish_calls(&self) -> usize {
-        if self.turn.is_some() {
-            2
-        } else {
-            0
-        }
+        self.turn.is_some() as usize + self.copied as usize
     }
     /// A world point (in the user's design) for a point of the working copy.
     pub fn to_world(&self, p: V3) -> V3 {
@@ -189,6 +187,8 @@ impl Prep {
     pub fn finish<R: Runner>(&self, r: &mut R, pieces: &[String]) -> Result<(), String> {
         if let Some((rot, o)) = &self.turn {
             r.run("solid.move", json!({"bodies": pieces, "axis": rot.axis, "angle": format!("{} deg", -rot.deg), "origin": o}))?;
+        }
+        if self.copied {
             r.run("solid.remove", json!({"bodies": [self.part]}))?;
         }
         Ok(())
@@ -214,6 +214,47 @@ fn bbox<R: Runner>(r: &mut R, body: &str, calls: &mut usize) -> Result<(V3, V3, 
     let bb = b.get("bbox").ok_or("The part has no size.")?;
     let (lo, hi) = (v3(bb.get("min")).ok_or("The part has no size.")?, v3(bb.get("max")).ok_or("The part has no size.")?);
     Ok((lo, hi, b))
+}
+
+/// A rigid placement: rotation columns and translation.
+type Place = ([V3; 3], V3);
+
+fn place_apply(m: &Place, p: V3) -> V3 {
+    let ([a, b, c], t) = m;
+    geom::add(geom::add(geom::add(geom::mul(*a, p[0]), geom::mul(*b, p[1])), geom::mul(*c, p[2])), *t)
+}
+
+/// `outer` after `inner`.
+fn place_then(outer: &Place, inner: &Place) -> Place {
+    let rot = |v: V3| geom::sub(place_apply(outer, v), outer.1);
+    ([rot(inner.0[0]), rot(inner.0[1]), rot(inner.0[2])], place_apply(outer, inner.1))
+}
+
+/// Where a body's component puts it in the design. SolidCraft gives meshes and faces in the
+/// component's own coordinates, so a part in a placed component (an imported STEP stood up, say)
+/// must be copied out and placed before it is read. `None` for a body of the design itself.
+fn placement<R: Runner>(r: &mut R, body: &str, calls: &mut usize) -> Result<Option<Place>, String> {
+    *calls += 1;
+    let list = r.run("component.list", json!({}))?;
+    let comps = list.get("components").and_then(Value::as_array).cloned().unwrap_or_default();
+    let has = |c: &Value| c.get("bodies").and_then(Value::as_array).is_some_and(|b| b.iter().any(|x| x.as_str() == Some(body)));
+    let Some(mut comp) = comps.iter().find(|c| has(c)).cloned() else { return Ok(None) };
+    let mut acc: Place = ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]);
+    for _ in 0..32 {
+        if comp.get("parent").is_none_or(Value::is_null) {
+            break;
+        }
+        let Some(occ) = comp.get("occurrences").and_then(Value::as_array).and_then(|o| o.first()).cloned() else { break };
+        let tr = occ.get("transform").and_then(Value::as_array).cloned().unwrap_or_default();
+        // Column-major: entries 0 to 2 are the axes, entry 3 the origin.
+        let col = |i: usize| v3(tr.get(i)).unwrap_or(if i < 3 { let mut e = [0.0; 3]; e[i] = 1.0; e } else { [0.0; 3] });
+        acc = place_then(&([col(0), col(1), col(2)], col(3)), &acc);
+        let parent = occ.get("parent").and_then(Value::as_i64).or_else(|| comp.get("parent").and_then(Value::as_i64));
+        let Some(next) = comps.iter().find(|c| c.get("id").and_then(Value::as_i64) == parent).cloned() else { break };
+        comp = next;
+    }
+    let ident = (0..3).all(|i| (0..3).all(|j| (acc.0[i][j] - if i == j { 1.0 } else { 0.0 }).abs() < 1e-9)) && geom::norm(acc.1) < 1e-9;
+    Ok((!ident).then_some(acc))
 }
 
 /// Find the part and its open face, turn a working copy so the open face faces down (-Z), and
@@ -266,25 +307,37 @@ pub fn prepare<R: Runner>(r: &mut R, p: &Params) -> Result<Prep, String> {
     let mut part = source.clone();
     let (mut lo, mut hi) = (lo0, hi0);
     let mut turn = None;
-    if let Some((n, o)) = open {
-        let rot = Rot::between(n, [0.0, 0.0, -1.0]);
-        if !rot.is_none() {
-            let base = "Mould working copy";
-            let mut name = base.to_string();
-            let mut k = 2;
-            while existing.iter().any(|e| *e == name) {
-                name = format!("{base} {k}");
-                k += 1;
-            }
-            calls += 1;
-            let v = r.run(
-                "solid.move",
-                json!({"bodies": [source], "copy": true, "axis": rot.axis, "angle": format!("{} deg", rot.deg), "origin": o, "body_name": name}),
-            )?;
-            part = build::created(&v).into_iter().next().ok_or("Couldn't turn a copy of the part.")?;
-            (lo, hi, _) = bbox(r, &part, &mut calls)?;
-            turn = Some((rot, o));
+    let mut copied = false;
+    let place = placement(r, &source, &mut calls)?;
+    let rot_t = open.map(|(n, o)| (Rot::between(n, [0.0, 0.0, -1.0]), o)).filter(|(rt, _)| !rt.is_none());
+    if place.is_some() || rot_t.is_some() {
+        // One copy, placed where the user sees the part and then turned open face down:
+        // frame = Rt (M p - o) + o, which is rotation Rt·Rm about the origin, then a shift.
+        let m: Place = place.unwrap_or(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]));
+        let (rt, o) = rot_t.unwrap_or((Rot::none(), [0.0; 3]));
+        let total = Rot::from_columns(rt.apply(m.0[0]), rt.apply(m.0[1]), rt.apply(m.0[2]));
+        let shift = geom::add(rt.apply(geom::sub(m.1, o)), o);
+        let base = "Mould working copy";
+        let mut name = base.to_string();
+        let mut k = 2;
+        while existing.iter().any(|e| *e == name) {
+            name = format!("{base} {k}");
+            k += 1;
         }
+        let mut mv = json!({"bodies": [source], "copy": true, "translate": shift, "body_name": name});
+        if !total.is_none() {
+            mv["axis"] = json!(total.axis);
+            mv["angle"] = json!(format!("{} deg", total.deg));
+            mv["origin"] = json!([0, 0, 0]);
+        }
+        calls += 1;
+        let v = r.run("solid.move", mv)?;
+        part = build::created(&v).into_iter().next().ok_or("Couldn't copy the part.")?;
+        (lo, hi, _) = bbox(r, &part, &mut calls)?;
+        copied = true;
+        turn = rot_t;
+    }
+    if let Some((_, o)) = open {
         let below = o[2] - lo[2];
         if below > 0.5 {
             return Err(format!(
@@ -319,7 +372,7 @@ pub fn prepare<R: Runner>(r: &mut R, p: &Params) -> Result<Prep, String> {
             [0, 1, 2].map(|i| a.get(i).and_then(Value::as_u64).unwrap_or(0) as usize)
         })
         .collect();
-    Ok(Prep { source, part, turn, lo, hi, mesh: geom::Mesh { pos, tri }, tol, existing, calls })
+    Ok(Prep { source, part, turn, copied, lo, hi, mesh: geom::Mesh { pos, tri }, tol, existing, calls })
 }
 
 /// Round mould. Builds everything in one run if it fits the host's limits; if not, the jacket

@@ -108,6 +108,10 @@ logic natively against `solidcraft-cli mcp --headless` and times every command.
 - Booleans on a body imported from SolidWorks STEP (edge gaps up to 0.001 mm, accepted on import)
   fail SolidCraft's own result check ("Vertex-Face Gap exceeds XSectTol3d", tolerance 0.00001 mm),
   and `body.repair` says there is nothing to repair.
+- `model.mesh` and `model.faces` answer in the body's component coordinates, while
+  `inspect.measure` and the selection answer in the design's. A part imported from STEP sits in
+  a placed component (stood up from Y-up, say), so the plugin reads the placement from
+  `component.list` and works on a placed copy.
 - The manifest may be at most 16 KB and its description 240 characters.
 - An edit entry that succeeds shows only "finished": its result, warnings and log are not shown,
   so a plugin can't tell the user what to do next.
