@@ -247,7 +247,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
             hoops.push(z);
         }
     }
-    let planned = prep.calls + calls + 80 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
+    let planned = prep.calls + calls + 100 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
     if planned > HOST_CALLS {
         return Err(format!("This mould needs about {planned} SolidCraft commands, more than one plugin run may make ({HOST_CALLS})."));
     }
@@ -400,7 +400,14 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         let a_lo = root + 0.3;
         let (c0, c1) = (f + 0.2, f + 0.2 + lug_t);
         let reach = 0.5 * bolt_d + 6.0;
-        for (target, b_lo, b_hi, at) in [(&base, -bt + 0.5, lo_b + reach, lo_b), (&cast, hi_b - reach, height * slant + bt - 0.5, hi_b)] {
+        // A 45° gusset on the lug's outer face, standing on the print bed (each base prints plate
+        // down), against the bolt pulling the lug towards the ear.
+        // 10 mm out from the lug, up 60% of its height.
+        let (gus_c, gus_b) = (10.0, (0.6 * (lo_b + reach + bt)).clamp(6.0, 30.0));
+        for (target, b_lo, b_hi, at, foot, up) in [
+            (&base, -bt + 0.5, lo_b + reach, lo_b, -bt + 0.5, 1.0),
+            (&cast, hi_b - reach, height * slant + bt - 0.5, hi_b, height * slant + bt - 0.5, -1.0),
+        ] {
             let mut tabs = Vec::new();
             for (o, e, u) in &seams {
                 let tab = b.first("solid.box", json!({"corner": [a_lo, b_lo, c0], "length": fw - a_lo, "width": b_hi - b_lo, "height": c1 - c0, "body_name": "Lug"}))?;
@@ -417,6 +424,15 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
                 b.run("solid.move", mv)?;
                 tabs.push(tab);
                 lug_bolts += 1;
+                // The gusset: a triangle in the lug's (c, b) plane, run out along u.
+                let at_w = |a: f64, bb: f64, c: f64| geom::add(*o, geom::add(geom::mul(*u, a), geom::add(geom::mul(*e, bb), geom::mul(n, c))));
+                b.k += 1;
+                let sk = format!("Mould lug gusset mm{}", b.k);
+                b.run("sketch.create", json!({"plane": {"origin": at_w(a_lo, 0.0, 0.0), "x_dir": n, "y_dir": e}, "name": sk}))?;
+                b.run("sketch.line", json!({"points": [[c1 - 0.5, foot], [c1 + gus_c, foot], [c1 - 0.5, foot + up * gus_b]], "closed": true}))?;
+                b.run("sketch.finish", json!({}))?;
+                // The sketch's normal is x × y = n × e = -u, so the gusset grows the other way.
+                tabs.push(b.first("solid.extrude", json!({"sketch": sk, "direction": "negative", "distance": fw - a_lo, "body_name": "Lug gusset"}))?);
             }
             b.run("solid.combine", json!({"target": target, "tools": tabs, "operation": "join"}))?;
         }
