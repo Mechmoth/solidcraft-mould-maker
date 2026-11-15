@@ -99,7 +99,7 @@ pub fn validate(p: &Params) -> Result<(), (String, String)> {
         ("printer_width", "Bed width", p.bed.x, 50.0, 2000.0),
         ("printer_depth", "Bed depth", p.bed.y, 50.0, 2000.0),
         ("printer_height", "Bed height", p.bed.z, 50.0, 2000.0),
-        ("wall", "Wall", p.wall, 5.0, 200.0),
+        ("wall", "Wall", p.wall, 2.0, 200.0),
         ("back_plate", "Back plate", p.back_plate, 5.0, 200.0),
         ("flange_width", "Flange width", p.flange_width, 12.0, 100.0),
         ("flange_thickness", "Flange thickness", p.flange_thickness, 6.0, 60.0),

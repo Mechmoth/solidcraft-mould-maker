@@ -139,14 +139,18 @@ pub(crate) struct EarSpec {
     pub eps: f64,
     pub bolt_d: f64,
     pub dowel_d: f64,
+    /// A square block this size in the corner where each half meets the wall, so the ear is
+    /// held by more than its edge. 0 for none.
+    pub root: f64,
 }
 
 impl<R: Runner> Bx<'_, R> {
     /// A bolting ear on a joint: two half slabs, one each side of the joint plane, drilled
     /// together and placed. `o` is a point on the joint's outer edge, `e` runs along the edge, `u`
     /// points out of the mould in the joint plane; the first half is on the `u × e` side.
-    /// Returns the two halves and the bolt and dowel counts.
-    pub(crate) fn ear(&mut self, s: &EarSpec, o: V3, e: V3, u: V3, b0: f64, b1: f64, row: &[(bool, f64)]) -> Result<(String, String, usize, usize), String> {
+    /// Returns the bodies of each half (slab first, then its root block) and the bolt and dowel
+    /// counts.
+    pub(crate) fn ear(&mut self, s: &EarSpec, o: V3, e: V3, u: V3, b0: f64, b1: f64, row: &[(bool, f64)]) -> Result<(Vec<String>, Vec<String>, usize, usize), String> {
         let (f, fw, ov, eps) = (s.f, s.fw, s.ov, s.eps);
         let n = cross(u, e);
         let ha = self.first("solid.box", json!({"corner": [-ov, b0, eps], "length": fw + ov, "width": b1 - b0, "height": f - eps, "body_name": "Ear"}))?;
@@ -175,15 +179,22 @@ impl<R: Runner> Bx<'_, R> {
             self.combine(&ha, &[drills[0].clone()], "cut", true)?;
             self.combine(&hb, &[drills[0].clone()], "cut", false)?;
         }
+        let (mut a, mut bb) = (vec![ha], vec![hb]);
+        if s.root > 0.0 {
+            let ri = 1.0_f64.min(ov);
+            a.push(self.first("solid.box", json!({"corner": [-ri, b0, f - 0.5], "length": s.root + ri, "width": b1 - b0, "height": s.root + 0.5, "body_name": "Ear root"}))?);
+            bb.push(self.first("solid.box", json!({"corner": [-ri, b0, -f - s.root], "length": s.root + ri, "width": b1 - b0, "height": s.root + 0.5, "body_name": "Ear root"}))?);
+        }
         let rot = Rot::from_columns(u, e, n);
-        let mut mv = json!({"bodies": [ha, hb], "translate": o});
+        let all: Vec<&String> = a.iter().chain(bb.iter()).collect();
+        let mut mv = json!({"bodies": all, "translate": o});
         if !rot.is_none() {
             mv["axis"] = json!(rot.axis);
             mv["angle"] = json!(format!("{} deg", rot.deg));
             mv["origin"] = json!([0, 0, 0]);
         }
         self.run("solid.move", mv)?;
-        Ok((ha, hb, bolts, dowels))
+        Ok((a, bb, bolts, dowels))
     }
 
     pub(crate) fn run(&mut self, cmd: &str, args: Value) -> Result<Value, String> {
@@ -375,8 +386,9 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         if ka == kb {
             return Err(format!("internal: joint {i} has {} on both sides", NAMES[ka]));
         }
-        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d };
+        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d, root: 0.0 };
         let (ha, hb, nb, nd) = b.ear(&es, *o, *ed, *u, b0, b1, row)?;
+        let (ha, hb) = (ha[0].clone(), hb[0].clone());
         bolts += nb;
         dowels += nd;
         ears[ka].push(ha);

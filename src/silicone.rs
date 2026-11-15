@@ -30,6 +30,22 @@ pub struct Hole {
     pub diameter: f64,
 }
 
+/// Where a line across a convex outline (y = v when `along_x`, else x = v) enters and leaves it.
+fn cross_section(poly: &[P2], along_x: bool, v: f64) -> (f64, f64) {
+    let (i, j) = if along_x { (1, 0) } else { (0, 1) };
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    let n = poly.len();
+    for k in 0..n {
+        let (a, b) = (poly[k], poly[(k + 1) % n]);
+        if (a[i] - v) * (b[i] - v) <= 0.0 && (a[i] - b[i]).abs() > 1e-12 {
+            let x = a[j] + (v - a[i]) / (b[i] - a[i]) * (b[j] - a[j]);
+            lo = lo.min(x);
+            hi = hi.max(x);
+        }
+    }
+    (lo, hi)
+}
+
 fn area(poly: &[P2]) -> f64 {
     let n = poly.len();
     0.5 * (0..n).map(|i| poly[i][0] * poly[(i + 1) % n][1] - poly[(i + 1) % n][0] * poly[i][1]).sum::<f64>()
@@ -132,23 +148,28 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     let taper_deg = tan_a.atan().to_degrees();
     let zc = z1 + t;
     let height = zc - z0;
-    let lip = (w - 3.0).clamp(0.0, 6.0);
-    let lip_h = if lip > 0.0 { 4.0 } else { 0.0 };
+    // The lip at the open end, and a band round the sleeve's foot thick enough to hold it.
+    let (lip, lip_h) = (4.0, 4.0);
+    let band = lip + w.max(3.0);
     // Sketches start 1 mm below the open face, so no face of the cut lies on the sleeve's ends.
     let cav = simplify(&grow(&outline, t + tan_a, 8.0), 0.05);
     let lip_line = simplify(&grow(&outline, t + lip, 8.0), 0.05);
-    let at_open = grow(&outline, t, 8.0);
+    let outer_line = simplify(&grow(&outline, t + w, 8.0), 0.05);
+    let band_line = simplify(&grow(&outline, t + band, 8.0), 0.05);
+    let foot = grow(&outline, t + band.max(w), 8.0);
     let (mut bx0, mut bx1, mut by0, mut by1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-    for q in &at_open {
+    for q in &foot {
         bx0 = bx0.min(q[0]);
         bx1 = bx1.max(q[0]);
         by0 = by0.min(q[1]);
         by1 = by1.max(q[1]);
     }
-    let (x0, x1, y0, y1) = (bx0 - w, bx1 + w, by0 - w, by1 + w);
+    let (x0, x1, y0, y1) = (bx0, bx1, by0, by1);
     // Split across the narrow sides: the split plane holds the long side.
     let split_y = (x1 - x0) >= (y1 - y0);
     let (xc, yc) = (0.5 * (x0 + x1), 0.5 * (y0 + y1));
+    // Where the split plane meets the sleeve's outside at the open face.
+    let (s_lo, s_hi) = cross_section(&grow(&outline, t + w, 8.0), split_y, if split_y { yc } else { xc });
 
     // Silicone needed: the tapered inside (Steiner: area of an outline grown by d is A + P d + π d²)
     // and the lip, less the part.
@@ -190,14 +211,21 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     };
     let (n_plug, n_a, n_b, n_base) = (free("Mould plug"), free("Mould sleeve A"), free("Mould sleeve B"), free("Mould base"));
 
-    // Seams and their holes.
+    // Seams: up the sleeve's outside where the split plane meets it, leaning in with the taper.
     let seams: Vec<(V3, V3, V3)> = if split_y {
-        vec![([x1, yc, z0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]), ([x0, yc, z0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0])]
+        vec![
+            ([s_hi, yc, z0], geom::unit([-tan_a, 0.0, 1.0]), geom::unit([1.0, 0.0, tan_a])),
+            ([s_lo, yc, z0], geom::unit([tan_a, 0.0, 1.0]), geom::unit([-1.0, 0.0, tan_a])),
+        ]
     } else {
-        vec![([xc, y1, z0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), ([xc, y0, z0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0])]
+        vec![
+            ([xc, s_hi, z0], geom::unit([0.0, -tan_a, 1.0]), geom::unit([0.0, 1.0, tan_a])),
+            ([xc, s_lo, z0], geom::unit([0.0, tan_a, 1.0]), geom::unit([0.0, -1.0, tan_a])),
+        ]
     };
     let rim_h = 6.0;
-    let (b0, b1) = (rim_h + 1.0, height - eps);
+    let slant = (1.0 + tan_a * tan_a).sqrt();
+    let (b0, b1) = ((lip_h + 4.0).max(rim_h + 1.0), height * slant - eps);
     let mut pos = spread(b0 + 15.0, b1 - 15.0, 150.0, 2);
     if pos.is_empty() {
         pos = vec![0.5 * (b0 + b1)];
@@ -206,7 +234,18 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     if dowel_d > 0.0 {
         row.extend(between(&pos).into_iter().take(1).map(|b| (false, b)));
     }
-    let planned = prep.calls + calls + 30 + 2 * (5 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
+    // Hoops round the outside, clear of the bolt and dowel holes.
+    let (rib, rib_h) = (4.0, 5.0);
+    let n_hoops = ((height / 70.0).round() as usize).max(2);
+    let clear = |z: f64| row.iter().all(|(_, b)| (b / slant - z).abs() > rib_h / 2.0 + 0.5 * bolt_d.max(dowel_d) + 4.0);
+    let mut hoops: Vec<f64> = Vec::new();
+    for k in 1..=n_hoops {
+        let want = (lip_h + 4.0) + (height - lip_h - 4.0 - rib_h) * k as f64 / (n_hoops as f64 + 0.5);
+        if let Some(z) = (0..60).map(|i| want + if i % 2 == 0 { 1.0 } else { -1.0 } * (i / 2) as f64).find(|z| clear(*z) && *z > lip_h + 6.0 && *z < height - rib_h) {
+            hoops.push(z);
+        }
+    }
+    let planned = prep.calls + calls + 40 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
     if planned > HOST_CALLS {
         return Err(format!("This mould needs about {planned} SolidCraft commands, more than one plugin run may make ({HOST_CALLS})."));
     }
@@ -219,7 +258,23 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
 
     // ---------- sleeve ----------
     b.r.progress(0.2, "sleeve");
-    let sleeve = b.named("solid.box", json!({"corner": [x0, y0, z0], "length": x1 - x0, "width": y1 - y0, "height": height, "body_name": n_a}))?;
+    // A shell following the silicone, `wall` thick, tapered with it.
+    let outline_body = |b: &mut Bx<R>, line: &[P2], z: f64, dist: f64, taper: f64, name: &str, exact: bool| -> Result<String, String> {
+        b.k += 1;
+        let sk = format!("Mould {} outline mm{}", name.to_lowercase(), b.k);
+        b.run("sketch.create", json!({"plane": "XY", "offset": z, "name": sk}))?;
+        b.run("sketch.line", json!({"points": line, "closed": true}))?;
+        b.run("sketch.finish", json!({}))?;
+        let args = json!({"sketch": sk, "distance": dist, "taper": taper, "body_name": name});
+        if exact { b.named("solid.extrude", args) } else { b.first("solid.extrude", args) }
+    };
+    let sleeve = outline_body(&mut b, &outer_line, z0, height, -taper_deg, &n_a, true)?;
+    let mut adds = vec![outline_body(&mut b, &band_line, z0, lip_h + 3.0, 0.0, "Sleeve foot", false)?];
+    for z in &hoops {
+        let line = simplify(&grow(&outline, t + w + rib - (z - z0) * tan_a, 8.0), 0.05);
+        adds.push(outline_body(&mut b, &line, z - rib_h / 2.0, rib_h, 0.0, "Hoop", false)?);
+    }
+    b.run("solid.combine", json!({"target": sleeve, "tools": adds, "operation": "join"}))?;
     b.k += 1;
     let sk = format!("Mould silicone outline mm{}", b.k);
     b.run("sketch.create", json!({"plane": "XY", "offset": z0 - 1.0, "name": sk}))?;
@@ -247,7 +302,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     for h in &across {
         let reach = (x1 - x0).max(y1 - y0) + 2.0 * fw + 20.0;
         let base = geom::sub(h.point, geom::mul(h.axis, reach / 2.0));
-        let drill = b.first("solid.cylinder", json!({"diameter": h.diameter, "height": reach, "base": base, "axis": h.axis, "body_name": "Rod hole"}))?;
+        let drill = b.first("solid.cylinder", json!({"diameter": h.diameter + 0.3, "height": reach, "base": base, "axis": h.axis, "body_name": "Rod hole"}))?;
         b.combine(&pos_half, &[drill.clone()], "cut", true)?;
         b.combine(&neg_half, &[drill], "cut", false)?;
         let span = if h.axis[0].abs() > h.axis[1].abs() { x1 - x0 } else { y1 - y0 };
@@ -260,7 +315,9 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
 
     // ---------- ears along both seams ----------
     b.r.progress(0.5, "bolting ears");
-    let es = EarSpec { f, fw, ov: 2.0, eps, bolt_d, dowel_d };
+    let hole = bolt_d.max(dowel_d);
+    let root = (0.5 * fw - 0.5 * hole - 1.0).clamp(0.0, 6.0);
+    let es = EarSpec { f, fw, ov: 1.0_f64.min(w - 0.5), eps, bolt_d, dowel_d, root };
     let (mut ears_pos, mut ears_neg) = (Vec::new(), Vec::new());
     let (mut bolts, mut dowels) = (0, 0);
     for (o, e, u) in &seams {
@@ -271,11 +328,11 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         let side = geom::cross(*u, *e);
         let a_on_pos = if split_y { side[1] > 0.0 } else { side[0] > 0.0 };
         if a_on_pos {
-            ears_pos.push(ha);
-            ears_neg.push(hb);
+            ears_pos.extend(ha);
+            ears_neg.extend(hb);
         } else {
-            ears_neg.push(ha);
-            ears_pos.push(hb);
+            ears_neg.extend(ha);
+            ears_pos.extend(hb);
         }
     }
     b.combine(&pos_half, &ears_pos, "join", false)?;
@@ -283,18 +340,19 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
 
     // ---------- base plate ----------
     b.r.progress(0.7, "base plate");
-    let (g, rw, bt) = (0.3, 4.0, 8.0);
-    let base = b.named(
-        "solid.box",
-        json!({"corner": [x0 - g - rw, y0 - g - rw, z0 - bt], "length": x1 - x0 + 2.0 * (g + rw), "width": y1 - y0 + 2.0 * (g + rw), "height": bt + rim_h, "body_name": n_base}),
-    )?;
-    let pocket = b.first("solid.box", json!({"corner": [x0 - g, y0 - g, z0], "length": x1 - x0 + 2.0 * g, "width": y1 - y0 + 2.0 * g, "height": rim_h + 1.0, "body_name": "Base pocket"}))?;
+    // A 4 mm plate the shape of the sleeve's foot, with a rim the foot sits in.
+    let (g, rw, bt) = (0.3, 3.0, 4.0);
+    let base_line = simplify(&grow(&outline, t + band.max(w) + g + rw, 8.0), 0.05);
+    let pocket_line = simplify(&grow(&outline, t + band.max(w) + g, 8.0), 0.05);
+    let base = outline_body(&mut b, &base_line, z0 - bt, bt + rim_h, 0.0, &n_base, true)?;
+    let pocket = outline_body(&mut b, &pocket_line, z0, rim_h + 1.0, 0.0, "Base pocket", false)?;
     b.combine(&base, &[pocket], "cut", false)?;
     // The plug isn't drilled: imported parts can carry gaps SolidCraft's booleans refuse.
+    // Sockets go right through, so the rod stands on the bench.
     for h in &sockets {
         let drill = b.first(
             "solid.cylinder",
-            json!({"diameter": h.diameter + 0.2, "height": 7.0, "base": [h.point[0], h.point[1], z0 - 6.0], "axis": [0, 0, 1], "body_name": "Rod socket"}),
+            json!({"diameter": h.diameter + 0.3, "height": bt + 2.0, "base": [h.point[0], h.point[1], z0 - bt - 1.0], "axis": [0, 0, 1], "body_name": "Rod socket"}),
         )?;
         b.combine(&base, &[drill], "cut", false)?;
     }
@@ -305,6 +363,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     let mut bed = [p.bed.x, p.bed.y, p.bed.z];
     bed.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut sizes = Vec::new();
+    let (mut mould_g, mut plug_g) = (0.0, 0.0);
     for body in m.get("bodies").and_then(Value::as_array).cloned().unwrap_or_default() {
         let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let bb = body.get("bbox");
@@ -319,7 +378,16 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
                 p.bed.x, p.bed.y, p.bed.z
             ));
         }
-        sizes.push(json!({"piece": name, "size_mm": d.iter().map(|x| round1(*x)).collect::<Vec<_>>()}));
+        // Filament, roughly: 1.2 mm of walls and skins over the whole surface, 15% infill inside.
+        let vol = body.get("volume_mm3").and_then(Value::as_f64).unwrap_or(0.0);
+        let skin = body.get("area_mm2").and_then(Value::as_f64).unwrap_or(0.0) * 1.2;
+        let grams = (vol.min(skin) + 0.15 * (vol - skin).max(0.0)) / 1000.0 * 1.24;
+        if name != plug {
+            mould_g += grams;
+        } else {
+            plug_g = grams;
+        }
+        sizes.push(json!({"piece": name, "size_mm": d.iter().map(|x| round1(*x)).collect::<Vec<_>>(), "pla_g": grams.round()}));
     }
     let calls = b.calls;
     prep.finish(r, &all)?;
@@ -355,6 +423,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         "dowel_holes": {"diameter_mm": p.dowel_diameter, "count": dowels},
         "base_rod_sockets": sockets.len(),
         "sizes": sizes,
+        "pla_g": {"sleeve_and_base": mould_g.round(), "plug": plug_g.round(), "note": "estimate at 3 walls and 15% infill"},
         "turned": prep.turn.is_some(),
         "host_calls": calls + prep.calls + prep.finish_calls(),
         "warnings": warnings,

@@ -21,8 +21,10 @@ the plugin.
   sleeve's rim; then turn it over, take the plug out and cast concrete into the silicone liner.
   The sleeve's inside follows the part's outline grown by the silicone thickness and tapers at no
   more than the part's own draft, with a lip at the open end. Round holes across the part get a
-  hole through the sleeve for a steel rod; holes along it get a socket in the base plate. The run
-  reports the silicone needed and the rods.
+  hole through the sleeve for a rod (0.3 mm clearance); holes along it get a socket through the
+  base plate. The sleeve is a shell that follows the silicone (3 mm by default) with hoops round
+  it and root blocks under its ears; the base is a 4 mm plate the shape of the sleeve's foot. The
+  run reports the silicone needed, the rods, and an estimate of the PLA each piece takes.
 
 Both put flanges on the outside of every joint, never on a casting face, with clearance holes
 for M4, M5, M6 or M8 bolts (or none, for clamps) and one dowel hole per joint, and size every
