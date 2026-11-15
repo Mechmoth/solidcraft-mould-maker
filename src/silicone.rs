@@ -247,7 +247,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
             hoops.push(z);
         }
     }
-    let planned = prep.calls + calls + 50 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
+    let planned = prep.calls + calls + 80 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
     if planned > HOST_CALLS {
         return Err(format!("This mould needs about {planned} SolidCraft commands, more than one plugin run may make ({HOST_CALLS})."));
     }
@@ -292,6 +292,12 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         b.run("sketch.finish", json!({}))?;
         tools.push(b.first("solid.extrude", json!({"sketch": sl, "distance": 1.0 + lip_h, "body_name": "Silicone lip"}))?);
     }
+    // A groove under the foot for the base's sealing ridge: a tongue and groove, with sealant in it.
+    let mid = t + lip + 0.5 * (band - lip);
+    let groove = outline_body(&mut b, &simplify(&grow(&outline, mid + 0.9, 8.0), 0.05), z0 - 1.0, 2.4, 0.0, "Seal groove", false)?;
+    let groove_in = outline_body(&mut b, &simplify(&grow(&outline, mid - 0.9, 8.0), 0.05), z0 - 2.0, 4.4, 0.0, "Seal groove inside", false)?;
+    b.combine(&groove, &[groove_in], "cut", false)?;
+    tools.push(groove);
     b.combine(&sleeve, &tools, "cut", false)?;
     let plane = if split_y { json!({"origin": [xc, yc, z0], "normal": [0, 1, 0]}) } else { json!({"origin": [xc, yc, z0], "normal": [1, 0, 0]}) };
     // The body keeps the side the normal points to; the new body is the other side.
@@ -320,7 +326,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     b.r.progress(0.5, "bolting ears");
     let hole = bolt_d.max(dowel_d);
     let root = (0.5 * fw - 0.5 * hole - 1.0).clamp(0.0, 6.0);
-    let es = EarSpec { f, fw, ov: 1.0_f64.min(w - 0.5), eps, bolt_d, dowel_d, root };
+    let es = EarSpec { f, fw, ov: 1.0_f64.min(w - 0.5), eps, bolt_d, dowel_d, root, pry: 12.0 };
     let (mut ears_pos, mut ears_neg) = (Vec::new(), Vec::new());
     let (mut bolts, mut dowels) = (0, 0);
     for (o, e, u) in &seams {
@@ -360,6 +366,13 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         b.combine(&base, &[drill], "cut", false)?;
     }
 
+    // A sealing ridge in the pocket, under the middle of the sleeve's foot: the foot beds on it in a
+    // thin bead of plasticine or sealant, pulled down by the lug bolts.
+    let ridge = outline_body(&mut b, &simplify(&grow(&outline, mid + 0.6, 8.0), 0.05), z0 - 0.5, 1.5, 0.0, "Seal ridge", false)?;
+    let ridge_in = outline_body(&mut b, &simplify(&grow(&outline, mid - 0.6, 8.0), 0.05), z0 - 1.0, 2.5, 0.0, "Seal ridge inside", false)?;
+    b.combine(&ridge, &[ridge_in], "cut", false)?;
+    b.run("solid.combine", json!({"target": base, "tools": [ridge], "operation": "join"}))?;
+
     // ---------- casting base ----------
     // The concrete stage stands on the sleeve's narrow end: a plate as wide as the silicone base,
     // for stability, that backs the silicone and has a rim round the sleeve's top end.
@@ -377,6 +390,42 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         )?;
         b.combine(&cast, &[drill], "cut", false)?;
     }
+
+    // ---------- lugs: a tab on each base beside each ear, held by the ear's end bolt ----------
+    let bolt_bs: Vec<f64> = row.iter().filter(|(is_bolt, _)| *is_bolt).map(|(_, b)| *b).collect();
+    let lug_t = 5.0;
+    let mut lug_bolts = 0;
+    if let (Some(&lo_b), Some(&hi_b)) = (bolt_bs.first(), bolt_bs.last()) {
+        b.r.progress(0.85, "lugs");
+        let a_lo = root + 0.3;
+        let (c0, c1) = (f + 0.2, f + 0.2 + lug_t);
+        let reach = 0.5 * bolt_d + 6.0;
+        for (target, b_lo, b_hi, at) in [(&base, -bt + 0.5, lo_b + reach, lo_b), (&cast, hi_b - reach, height * slant + bt - 0.5, hi_b)] {
+            let mut tabs = Vec::new();
+            for (o, e, u) in &seams {
+                let tab = b.first("solid.box", json!({"corner": [a_lo, b_lo, c0], "length": fw - a_lo, "width": b_hi - b_lo, "height": c1 - c0, "body_name": "Lug"}))?;
+                let drill = b.first("solid.cylinder", json!({"diameter": bolt_d, "height": c1 - c0 + 2.0, "base": [0.5 * fw, at, c0 - 1.0], "axis": [0, 0, 1], "body_name": "Lug hole"}))?;
+                b.combine(&tab, &[drill], "cut", false)?;
+                let n = geom::cross(*u, *e);
+                let rot = geom::Rot::from_columns(*u, *e, n);
+                let mut mv = json!({"bodies": [tab], "translate": o});
+                if !rot.is_none() {
+                    mv["axis"] = json!(rot.axis);
+                    mv["angle"] = json!(format!("{} deg", rot.deg));
+                    mv["origin"] = json!([0, 0, 0]);
+                }
+                b.run("solid.move", mv)?;
+                tabs.push(tab);
+                lug_bolts += 1;
+            }
+            b.run("solid.combine", json!({"target": target, "tools": tabs, "operation": "join"}))?;
+        }
+    }
+    // Bolt lengths: what they clamp, plus two washers and a nut, up to a stock length.
+    let stock = |grip: f64| -> f64 {
+        let need = grip + 2.0 + 0.8 * bolt_d + 2.0;
+        [12.0, 16.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0].into_iter().find(|l| *l >= need).unwrap_or(need.ceil())
+    };
 
     // ---------- does every piece fit the printer? ----------
     let all = vec![plug.clone(), pos_half.clone(), neg_half.clone(), base.clone(), cast.clone()];
@@ -441,7 +490,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         "taper_deg": (taper_deg * 100.0).round() / 100.0,
         "split": if split_y { "across Y" } else { "across X" },
         "rods": rods,
-        "bolts": {"size": p.bolt, "count": bolts},
+        "bolts": {"size": p.bolt, "ear_bolts": bolts.saturating_sub(lug_bolts), "ear_bolt_length_mm": stock(2.0 * f),
+                  "lug_bolts": lug_bolts, "lug_bolt_length_mm": stock(2.0 * f + 0.2 + lug_t)},
         "dowel_holes": {"diameter_mm": p.dowel_diameter, "count": dowels},
         "base_rod_sockets": sockets.len(),
         "sizes": sizes,

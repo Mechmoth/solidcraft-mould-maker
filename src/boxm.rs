@@ -142,6 +142,9 @@ pub(crate) struct EarSpec {
     /// A square block this size in the corner where each half meets the wall, so the ear is
     /// held by more than its edge. 0 for none.
     pub root: f64,
+    /// Length of a 3 mm pry slot between the halves at each end of the ear, for a flat
+    /// screwdriver. 0 for none.
+    pub pry: f64,
 }
 
 impl<R: Runner> Bx<'_, R> {
@@ -178,6 +181,13 @@ impl<R: Runner> Bx<'_, R> {
             }
             self.combine(&ha, &[drills[0].clone()], "cut", true)?;
             self.combine(&hb, &[drills[0].clone()], "cut", false)?;
+        }
+        if s.pry > 0.0 {
+            let lo = self.first("solid.box", json!({"corner": [fw - 7.0, b0 - 1.0, -1.5], "length": 8.0, "width": s.pry + 1.0, "height": 3.0, "body_name": "Pry slot"}))?;
+            let hi = self.first("solid.box", json!({"corner": [fw - 7.0, b1 - s.pry, -1.5], "length": 8.0, "width": s.pry + 1.0, "height": 3.0, "body_name": "Pry slot"}))?;
+            self.run("solid.combine", json!({"target": lo, "tools": [hi], "operation": "join", "touching": "one_body"}))?;
+            self.combine(&ha, &[lo.clone()], "cut", true)?;
+            self.combine(&hb, &[lo], "cut", false)?;
         }
         let (mut a, mut bb) = (vec![ha], vec![hb]);
         if s.root > 0.0 {
@@ -386,7 +396,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         if ka == kb {
             return Err(format!("internal: joint {i} has {} on both sides", NAMES[ka]));
         }
-        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d, root: 0.0 };
+        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d, root: 0.0, pry: 0.0 };
         let (ha, hb, nb, nd) = b.ear(&es, *o, *ed, *u, b0, b1, row)?;
         let (ha, hb) = (ha[0].clone(), hb[0].clone());
         bolts += nb;

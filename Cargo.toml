@@ -1,6 +1,6 @@
 [package]
 name = "mould-maker"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Printed rigid mould generator, a SolidCraft plugin"
 license = "MIT"

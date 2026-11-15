@@ -25,6 +25,10 @@ the plugin.
   base plate. The sleeve is a shell that follows the silicone (3 mm by default) with hoops round
   it and root blocks under its ears; the base is a 4 mm plate the shape of the sleeve's foot. The
   run reports the silicone needed, the rods, and an estimate of the PLA each piece takes.
+  Each base has a lug at each seam that the ear's end bolt goes through, so the stack bolts
+  together; the silicone base has a sealing ridge that sits in a groove under the sleeve's foot
+  (put a thin bead of plasticine or sealant in the groove); each seam has a pry slot at both
+  ends for a flat screwdriver.
 
 Both put flanges on the outside of every joint, never on a casting face, with clearance holes
 for M4, M5, M6 or M8 bolts (or none, for clamps) and one dowel hole per joint, and size every
