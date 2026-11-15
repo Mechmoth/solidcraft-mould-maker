@@ -209,7 +209,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         }
         (2..).map(|k| format!("{base} #{k}")).find(|c| !clash(c)).unwrap()
     };
-    let (n_plug, n_a, n_b, n_base) = (free("Mould plug"), free("Mould sleeve A"), free("Mould sleeve B"), free("Mould base"));
+    let (n_plug, n_a, n_b, n_base, n_cast) =
+        (free("Mould plug"), free("Mould sleeve A"), free("Mould sleeve B"), free("Mould silicone base"), free("Mould casting base"));
 
     // Seams: up the sleeve's outside where the split plane meets it, leaning in with the taper.
     let seams: Vec<(V3, V3, V3)> = if split_y {
@@ -225,7 +226,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     };
     let rim_h = 6.0;
     let slant = (1.0 + tan_a * tan_a).sqrt();
-    let (b0, b1) = ((lip_h + 4.0).max(rim_h + 1.0), height * slant - eps);
+    // Ears stop short of both bases' rims.
+    let (b0, b1) = ((lip_h + 4.0).max(rim_h + 1.0), (height - rim_h - 1.0) * slant);
     let mut pos = spread(b0 + 15.0, b1 - 15.0, 150.0, 2);
     if pos.is_empty() {
         pos = vec![0.5 * (b0 + b1)];
@@ -241,11 +243,11 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     let mut hoops: Vec<f64> = Vec::new();
     for k in 1..=n_hoops {
         let want = (lip_h + 4.0) + (height - lip_h - 4.0 - rib_h) * k as f64 / (n_hoops as f64 + 0.5);
-        if let Some(z) = (0..60).map(|i| want + if i % 2 == 0 { 1.0 } else { -1.0 } * (i / 2) as f64).find(|z| clear(*z) && *z > lip_h + 6.0 && *z < height - rib_h) {
+        if let Some(z) = (0..60).map(|i| want + if i % 2 == 0 { 1.0 } else { -1.0 } * (i / 2) as f64).find(|z| clear(*z) && *z > lip_h + 6.0 && *z < height - rim_h - 1.0 - rib_h) {
             hoops.push(z);
         }
     }
-    let planned = prep.calls + calls + 40 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
+    let planned = prep.calls + calls + 50 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
     if planned > HOST_CALLS {
         return Err(format!("This mould needs about {planned} SolidCraft commands, more than one plugin run may make ({HOST_CALLS})."));
     }
@@ -310,7 +312,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
                          "at_mm_from_open_face": round1(h.point[2] - z0)}));
     }
     for h in &along {
-        rods.push(json!({"diameter_mm": round1(h.diameter), "across": false, "length_mm": (z1 - z0 + 40.0).ceil()}));
+        // Through the silicone base, the part, the silicone and the casting base, with 30 mm to grip.
+        rods.push(json!({"diameter_mm": round1(h.diameter), "across": false, "length_mm": (height + 4.0 + 30.0).ceil()}));
     }
 
     // ---------- ears along both seams ----------
@@ -357,8 +360,26 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         b.combine(&base, &[drill], "cut", false)?;
     }
 
+    // ---------- casting base ----------
+    // The concrete stage stands on the sleeve's narrow end: a plate as wide as the silicone base,
+    // for stability, that backs the silicone and has a rim round the sleeve's top end.
+    b.r.progress(0.8, "casting base");
+    let top = t + w - height * tan_a;
+    let cast = outline_body(&mut b, &base_line, zc, bt, 0.0, &n_cast, true)?;
+    let ring = outline_body(&mut b, &simplify(&grow(&outline, top + g + rw, 8.0), 0.05), zc - rim_h, rim_h + 0.5, 0.0, "Casting rim", false)?;
+    b.run("solid.combine", json!({"target": cast, "tools": [ring], "operation": "join"}))?;
+    let pocket = outline_body(&mut b, &simplify(&grow(&outline, top + g, 8.0), 0.05), zc - rim_h - 1.0, rim_h + 1.0, 0.0, "Casting pocket", false)?;
+    b.combine(&cast, &[pocket], "cut", false)?;
+    for h in &sockets {
+        let drill = b.first(
+            "solid.cylinder",
+            json!({"diameter": h.diameter + 0.3, "height": bt + 2.0, "base": [h.point[0], h.point[1], zc - 1.0], "axis": [0, 0, 1], "body_name": "Rod socket"}),
+        )?;
+        b.combine(&cast, &[drill], "cut", false)?;
+    }
+
     // ---------- does every piece fit the printer? ----------
-    let all = vec![plug.clone(), pos_half.clone(), neg_half.clone(), base.clone()];
+    let all = vec![plug.clone(), pos_half.clone(), neg_half.clone(), base.clone(), cast.clone()];
     let m = b.run("inspect.measure", json!({"bodies": all}))?;
     let mut bed = [p.bed.x, p.bed.y, p.bed.z];
     bed.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -412,8 +433,9 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         "part": prep.source,
         "plug": plug,
         "sleeve": [pos_half, neg_half],
-        "base": base,
-        "pieces": 4,
+        "silicone_base": base,
+        "casting_base": cast,
+        "pieces": 5,
         "silicone": {"thickness_mm": t, "volume_ml": silicone_ml.round(), "mass_g_at_sg_1_05": (silicone_ml * 1.05).round(),
                      "pour_to_mm_above_open_face": round1(height)},
         "taper_deg": (taper_deg * 100.0).round() / 100.0,

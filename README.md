@@ -17,8 +17,8 @@ the plugin.
   straight off sideways and a back that lifts off, split on mitres at the corners.
 - **Plugins › Silicone sleeve mould…** for parts a rigid mould can't release (flutes, texture,
   undercuts): a printed plug (the part), a sleeve split in two across the part's narrow sides,
-  and a base plate. Stand the plug on the base, bolt the sleeve round it and pour silicone to the
-  sleeve's rim; then turn it over, take the plug out and cast concrete into the silicone liner.
+  a silicone base and a casting base. Stand the plug on the silicone base, bolt the sleeve round it and pour silicone to the
+  sleeve's rim; then turn it over onto the casting base, take the plug out and cast concrete into the silicone liner.
   The sleeve's inside follows the part's outline grown by the silicone thickness and tapers at no
   more than the part's own draft, with a lip at the open end. Round holes across the part get a
   hole through the sleeve for a rod (0.3 mm clearance); holes along it get a socket through the

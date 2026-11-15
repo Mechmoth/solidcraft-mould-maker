@@ -183,10 +183,10 @@ def finish(h):
 
 
 def check_silicone(h, part, rep):
-    pieces = [rep["plug"]] + rep["sleeve"] + [rep["base"]]
+    pieces = [rep["plug"]] + rep["sleeve"] + [rep["silicone_base"], rep["casting_base"]]
     after = h.tool("measure", summary=True)
     bodies = {b["name"]: b for b in after["bodies"]}
-    check(sorted(set(bodies) - {part}) == sorted(pieces), f"plug, two sleeve halves and base plate: {sorted(set(bodies) - {part})}")
+    check(sorted(set(bodies) - {part}) == sorted(pieces), f"plug, two sleeve halves and two bases: {sorted(set(bodies) - {part})}")
     check(all(bodies[p]["closed"] for p in pieces), "every piece is a closed solid")
     check(abs(bodies[rep["plug"]]["volume_mm3"] - bodies[part]["volume_mm3"]) < 1.0, "the plug is the part")
     inter = h.ex("inspect.interference", bodies=pieces)
