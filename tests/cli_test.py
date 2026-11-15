@@ -89,6 +89,9 @@ def main():
     runs = extra.pop("runs", 1)
     select = extra.pop("select", None) or [{"type": "body", "name": part}]
     expect_error = extra.pop("expect_error", None)
+    activate = extra.pop("activate", None)
+    if activate is not None:
+        h.ex("component.activate", component=activate)
     h.ex("select.set", items=select)
     print("selection:", json.dumps(h.ex("selection.get", detail=False))[:200])
     before = h.tool("measure", summary=True)
@@ -117,6 +120,8 @@ def main():
         print(f"run {i + 1}:", json.dumps({k: v for k, v in r1.items() if k not in ("jacket", "plate_rings", "plate_centre", "piece_kinds", "sizes")}))
         check(dt < 30, f"run {i + 1} took {dt:.1f} s (host deadline 30 s)")
         reps.append(r1)
+    if activate is not None:
+        check(h.ex("component.list")["active"] == activate, "the component that was active is active again")
     if entry == "box-mould":
         return check_box(h, part, reps[-1], params)
     if entry == "silicone-mould":

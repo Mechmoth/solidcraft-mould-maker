@@ -162,6 +162,8 @@ pub struct Prep {
     pub turn: Option<(Rot, V3)>,
     /// Whether `part` is a working copy (turned, or placed out of a component) to remove at the end.
     pub copied: bool,
+    /// The component that was active, to make active again at the end.
+    pub restore: Option<i64>,
     pub lo: V3,
     pub hi: V3,
     pub mesh: geom::Mesh,
@@ -174,7 +176,7 @@ pub struct Prep {
 impl Prep {
     /// Host calls `finish` will make.
     pub fn finish_calls(&self) -> usize {
-        self.turn.is_some() as usize + self.copied as usize
+        self.turn.is_some() as usize + self.copied as usize + self.restore.is_some() as usize
     }
     /// A world point (in the user's design) for a point of the working copy.
     pub fn to_world(&self, p: V3) -> V3 {
@@ -190,6 +192,9 @@ impl Prep {
         }
         if self.copied {
             r.run("solid.remove", json!({"bodies": [self.part]}))?;
+        }
+        if let Some(c) = self.restore {
+            r.run("component.activate", json!({"component": c}))?;
         }
         Ok(())
     }
@@ -233,12 +238,20 @@ fn place_then(outer: &Place, inner: &Place) -> Place {
 /// Where a body's component puts it in the design. SolidCraft gives meshes and faces in the
 /// component's own coordinates, so a part in a placed component (an imported STEP stood up, say)
 /// must be copied out and placed before it is read. `None` for a body of the design itself.
-fn placement<R: Runner>(r: &mut R, body: &str, calls: &mut usize) -> Result<Option<Place>, String> {
+/// Also returns the active component and the design's own (root) component, by id.
+fn placement<R: Runner>(r: &mut R, body: &str, calls: &mut usize) -> Result<(Option<Place>, Option<i64>, Option<i64>), String> {
     *calls += 1;
     let list = r.run("component.list", json!({}))?;
     let comps = list.get("components").and_then(Value::as_array).cloned().unwrap_or_default();
+    let active = list.get("active").and_then(Value::as_i64);
+    let root = comps.iter().find(|c| c.get("parent").is_none_or(Value::is_null)).and_then(|c| c.get("id")).and_then(Value::as_i64);
+    let place = placed(&comps, body);
+    Ok((place, active, root))
+}
+
+fn placed(comps: &[Value], body: &str) -> Option<Place> {
     let has = |c: &Value| c.get("bodies").and_then(Value::as_array).is_some_and(|b| b.iter().any(|x| x.as_str() == Some(body)));
-    let Some(mut comp) = comps.iter().find(|c| has(c)).cloned() else { return Ok(None) };
+    let mut comp = comps.iter().find(|c| has(c)).cloned()?;
     let mut acc: Place = ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]);
     for _ in 0..32 {
         if comp.get("parent").is_none_or(Value::is_null) {
@@ -254,7 +267,7 @@ fn placement<R: Runner>(r: &mut R, body: &str, calls: &mut usize) -> Result<Opti
         comp = next;
     }
     let ident = (0..3).all(|i| (0..3).all(|j| (acc.0[i][j] - if i == j { 1.0 } else { 0.0 }).abs() < 1e-9)) && geom::norm(acc.1) < 1e-9;
-    Ok((!ident).then_some(acc))
+    (!ident).then_some(acc)
 }
 
 /// Find the part and its open face, turn a working copy so the open face faces down (-Z), and
@@ -308,7 +321,16 @@ pub fn prepare<R: Runner>(r: &mut R, p: &Params) -> Result<Prep, String> {
     let (mut lo, mut hi) = (lo0, hi0);
     let mut turn = None;
     let mut copied = false;
-    let place = placement(r, &source, &mut calls)?;
+    let (place, active, root) = placement(r, &source, &mut calls)?;
+    // New bodies go into the active component, in its coordinates: build in the design's own.
+    let restore = match (active, root) {
+        (Some(a), Some(rt)) if a != rt => {
+            calls += 1;
+            r.run("component.activate", json!({"component": rt}))?;
+            Some(a)
+        }
+        _ => None,
+    };
     let rot_t = open.map(|(n, o)| (Rot::between(n, [0.0, 0.0, -1.0]), o)).filter(|(rt, _)| !rt.is_none());
     if place.is_some() || rot_t.is_some() {
         // One copy, placed where the user sees the part and then turned open face down:
@@ -372,7 +394,7 @@ pub fn prepare<R: Runner>(r: &mut R, p: &Params) -> Result<Prep, String> {
             [0, 1, 2].map(|i| a.get(i).and_then(Value::as_u64).unwrap_or(0) as usize)
         })
         .collect();
-    Ok(Prep { source, part, turn, copied, lo, hi, mesh: geom::Mesh { pos, tri }, tol, existing, calls })
+    Ok(Prep { source, part, turn, copied, restore, lo, hi, mesh: geom::Mesh { pos, tri }, tol, existing, calls })
 }
 
 /// Round mould. Builds everything in one run if it fits the host's limits; if not, the jacket
