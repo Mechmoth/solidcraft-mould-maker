@@ -28,7 +28,7 @@ the plugin.
   Each base has a lug at each seam that the ear's end bolt goes through, so the stack bolts
   together; the silicone base has a sealing ridge that sits in a groove under the sleeve's foot
   (put a thin bead of plasticine or sealant in the groove); each seam has a pry slot at both
-  ends for a flat screwdriver. Each lug has a 45° gusset on its outer face, standing on the print bed.
+  ends for a flat screwdriver. Each lug has a 45° gusset on its outer face, standing on the print bed. Nothing on the sleeve sticks out flat: the hoops are pointed, the foot band's top edge, the lip and both ends of every ear are 45°, so a sleeve half prints without support standing on either end.
 
 Both put flanges on the outside of every joint, never on a casting face, with clearance holes
 for M4, M5, M6 or M8 bolts (or none, for clamps) and one dowel hole per joint, and size every

@@ -149,13 +149,13 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     let zc = z1 + t;
     let height = zc - z0;
     // The lip at the open end, and a band round the sleeve's foot thick enough to hold it.
-    let (lip, lip_h) = (4.0, 4.0);
+    let (lip, lip_h): (f64, f64) = (4.0, 4.0);
     let band = lip + w.max(3.0);
     // Sketches start 1 mm below the open face, so no face of the cut lies on the sleeve's ends.
-    let cav = simplify(&grow(&outline, t + tan_a, 8.0), 0.05);
-    let lip_line = simplify(&grow(&outline, t + lip, 8.0), 0.05);
-    let outer_line = simplify(&grow(&outline, t + w, 8.0), 0.05);
-    let band_line = simplify(&grow(&outline, t + band, 8.0), 0.05);
+    let cav = simplify(&grow(&outline, t + tan_a, 15.0), 0.3);
+    let lip_line = simplify(&grow(&outline, t + lip + 1.0, 15.0), 0.3);
+    let outer_line = simplify(&grow(&outline, t + w, 15.0), 0.3);
+    let band_line = simplify(&grow(&outline, t + band, 15.0), 0.3);
     let foot = grow(&outline, t + band.max(w), 8.0);
     let (mut bx0, mut bx1, mut by0, mut by1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for q in &foot {
@@ -183,7 +183,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         })
         .sum();
     let ring = |d: f64| a0 + p0 * d + std::f64::consts::PI * d * d;
-    let lip_v = lip_h * (ring(t + lip) - ring(t));
+    let lip_v = 0.5 * lip * (ring(t + lip) - ring(t));
     let silicone_ml = (cav_v + lip_v - mesh_volume(&prep.mesh)) / 1000.0;
 
     // ---------- holes ----------
@@ -237,7 +237,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         row.extend(between(&pos).into_iter().take(1).map(|b| (false, b)));
     }
     // Hoops round the outside, clear of the bolt and dowel holes.
-    let (rib, rib_h) = (4.0, 5.0);
+    // Pointed hoops: `rib` out from the wall, twice that tall.
+    let (rib, rib_h) = (4.0, 9.0);
     let n_hoops = ((height / 70.0).round() as usize).max(2);
     let clear = |z: f64| row.iter().all(|(_, b)| (b / slant - z).abs() > rib_h / 2.0 + 0.5 * bolt_d.max(dowel_d) + 4.0);
     let mut hoops: Vec<f64> = Vec::new();
@@ -247,7 +248,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
             hoops.push(z);
         }
     }
-    let planned = prep.calls + calls + 100 + 4 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
+    let planned = prep.calls + calls + 115 + 5 * hoops.len() + 2 * (7 + row.len()) + 2 * across.len() + sockets.len() + prep.finish_calls();
     if planned > HOST_CALLS {
         return Err(format!("This mould needs about {planned} SolidCraft commands, more than one plugin run may make ({HOST_CALLS})."));
     }
@@ -272,9 +273,25 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     };
     let sleeve = outline_body(&mut b, &outer_line, z0, height, -taper_deg, &n_a, true)?;
     let mut adds = vec![outline_body(&mut b, &band_line, z0, lip_h + 3.0, 0.0, "Sleeve foot", false)?];
+    // The halves print standing on either end, so nothing sticks out flat: the foot band's top
+    // edge slopes in at 45°, and the hoops are pointed, 45° above and below.
+    let band_top = z0 + lip_h + 3.0;
+    b.k += 1;
+    let sk_top = format!("Mould sleeve foot top mm{}", b.k);
+    b.run("sketch.create", json!({"plane": "XY", "offset": band_top, "name": sk_top}))?;
+    b.run("sketch.line", json!({"points": band_line, "closed": true}))?;
+    b.run("sketch.finish", json!({}))?;
+    adds.push(b.first("solid.extrude", json!({"sketch": sk_top, "distance": band - w + 0.5, "taper": -45.0, "body_name": "Foot slope"}))?);
     for z in &hoops {
-        let line = simplify(&grow(&outline, t + w + rib - (z - z0) * tan_a, 8.0), 0.05);
-        adds.push(outline_body(&mut b, &line, z - rib_h / 2.0, rib_h, 0.0, "Hoop", false)?);
+        let line = simplify(&grow(&outline, t + w + rib - (z - z0) * tan_a, 15.0), 0.3);
+        b.k += 1;
+        let sk = format!("Mould hoop outline mm{}", b.k);
+        b.run("sketch.create", json!({"plane": "XY", "offset": z, "name": sk}))?;
+        b.run("sketch.line", json!({"points": line, "closed": true}))?;
+        b.run("sketch.finish", json!({}))?;
+        for dir in ["positive", "negative"] {
+            adds.push(b.first("solid.extrude", json!({"sketch": sk, "direction": dir, "distance": rib + 0.5, "taper": -45.0, "body_name": "Hoop"}))?);
+        }
     }
     b.run("solid.combine", json!({"target": sleeve, "tools": adds, "operation": "join"}))?;
     b.k += 1;
@@ -290,12 +307,13 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         b.run("sketch.create", json!({"plane": "XY", "offset": z0 - 1.0, "name": sl}))?;
         b.run("sketch.line", json!({"points": lip_line, "closed": true}))?;
         b.run("sketch.finish", json!({}))?;
-        tools.push(b.first("solid.extrude", json!({"sketch": sl, "distance": 1.0 + lip_h, "body_name": "Silicone lip"}))?);
+        // A 45° flare rather than a step, so there's no flat ceiling to print over.
+        tools.push(b.first("solid.extrude", json!({"sketch": sl, "distance": 1.0 + lip, "taper": -45.0, "body_name": "Silicone lip"}))?);
     }
     // A groove under the foot for the base's sealing ridge: a tongue and groove, with sealant in it.
     let mid = t + lip + 0.5 * (band - lip);
-    let groove = outline_body(&mut b, &simplify(&grow(&outline, mid + 0.9, 8.0), 0.05), z0 - 1.0, 2.4, 0.0, "Seal groove", false)?;
-    let groove_in = outline_body(&mut b, &simplify(&grow(&outline, mid - 0.9, 8.0), 0.05), z0 - 2.0, 4.4, 0.0, "Seal groove inside", false)?;
+    let groove = outline_body(&mut b, &simplify(&grow(&outline, mid + 0.9, 15.0), 0.3), z0 - 1.0, 2.4, 0.0, "Seal groove", false)?;
+    let groove_in = outline_body(&mut b, &simplify(&grow(&outline, mid - 0.9, 15.0), 0.3), z0 - 2.0, 4.4, 0.0, "Seal groove inside", false)?;
     b.combine(&groove, &[groove_in], "cut", false)?;
     tools.push(groove);
     b.combine(&sleeve, &tools, "cut", false)?;
@@ -326,7 +344,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     b.r.progress(0.5, "bolting ears");
     let hole = bolt_d.max(dowel_d);
     let root = (0.5 * fw - 0.5 * hole - 1.0).clamp(0.0, 6.0);
-    let es = EarSpec { f, fw, ov: 1.0_f64.min(w - 0.5), eps, bolt_d, dowel_d, root, pry: 12.0 };
+    let es = EarSpec { f, fw, ov: 1.0_f64.min(w - 0.5), eps, bolt_d, dowel_d, root, pry: 12.0, chamfer: true };
     let (mut ears_pos, mut ears_neg) = (Vec::new(), Vec::new());
     let (mut bolts, mut dowels) = (0, 0);
     for (o, e, u) in &seams {
@@ -351,8 +369,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     b.r.progress(0.7, "base plate");
     // A 4 mm plate the shape of the sleeve's foot, with a rim the foot sits in.
     let (g, rw, bt) = (0.3, 3.0, 4.0);
-    let base_line = simplify(&grow(&outline, t + band.max(w) + g + rw, 8.0), 0.05);
-    let pocket_line = simplify(&grow(&outline, t + band.max(w) + g, 8.0), 0.05);
+    let base_line = simplify(&grow(&outline, t + band.max(w) + g + rw, 15.0), 0.3);
+    let pocket_line = simplify(&grow(&outline, t + band.max(w) + g, 15.0), 0.3);
     let base = outline_body(&mut b, &base_line, z0 - bt, bt + rim_h, 0.0, &n_base, true)?;
     let pocket = outline_body(&mut b, &pocket_line, z0, rim_h + 1.0, 0.0, "Base pocket", false)?;
     b.combine(&base, &[pocket], "cut", false)?;
@@ -368,8 +386,8 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
 
     // A sealing ridge in the pocket, under the middle of the sleeve's foot: the foot beds on it in a
     // thin bead of plasticine or sealant, pulled down by the lug bolts.
-    let ridge = outline_body(&mut b, &simplify(&grow(&outline, mid + 0.6, 8.0), 0.05), z0 - 0.5, 1.5, 0.0, "Seal ridge", false)?;
-    let ridge_in = outline_body(&mut b, &simplify(&grow(&outline, mid - 0.6, 8.0), 0.05), z0 - 1.0, 2.5, 0.0, "Seal ridge inside", false)?;
+    let ridge = outline_body(&mut b, &simplify(&grow(&outline, mid + 0.6, 15.0), 0.3), z0 - 0.5, 1.5, 0.0, "Seal ridge", false)?;
+    let ridge_in = outline_body(&mut b, &simplify(&grow(&outline, mid - 0.6, 15.0), 0.3), z0 - 1.0, 2.5, 0.0, "Seal ridge inside", false)?;
     b.combine(&ridge, &[ridge_in], "cut", false)?;
     b.run("solid.combine", json!({"target": base, "tools": [ridge], "operation": "join"}))?;
 
@@ -379,9 +397,9 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
     b.r.progress(0.8, "casting base");
     let top = t + w - height * tan_a;
     let cast = outline_body(&mut b, &base_line, zc, bt, 0.0, &n_cast, true)?;
-    let ring = outline_body(&mut b, &simplify(&grow(&outline, top + g + rw, 8.0), 0.05), zc - rim_h, rim_h + 0.5, 0.0, "Casting rim", false)?;
+    let ring = outline_body(&mut b, &simplify(&grow(&outline, top + g + rw, 15.0), 0.3), zc - rim_h, rim_h + 0.5, 0.0, "Casting rim", false)?;
     b.run("solid.combine", json!({"target": cast, "tools": [ring], "operation": "join"}))?;
-    let pocket = outline_body(&mut b, &simplify(&grow(&outline, top + g, 8.0), 0.05), zc - rim_h - 1.0, rim_h + 1.0, 0.0, "Casting pocket", false)?;
+    let pocket = outline_body(&mut b, &simplify(&grow(&outline, top + g, 15.0), 0.3), zc - rim_h - 1.0, rim_h + 1.0, 0.0, "Casting pocket", false)?;
     b.combine(&cast, &[pocket], "cut", false)?;
     for h in &sockets {
         let drill = b.first(

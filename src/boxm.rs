@@ -145,6 +145,9 @@ pub(crate) struct EarSpec {
     /// Length of a 3 mm pry slot between the halves at each end of the ear, for a flat
     /// screwdriver. 0 for none.
     pub pry: f64,
+    /// Chamfer both ends of the ear at 45°, out from the wall, so it prints without support
+    /// whichever end of the mould stands on the bed.
+    pub chamfer: bool,
 }
 
 impl<R: Runner> Bx<'_, R> {
@@ -194,6 +197,21 @@ impl<R: Runner> Bx<'_, R> {
             let ri = 1.0_f64.min(ov);
             a.push(self.first("solid.box", json!({"corner": [-ri, b0, f - 0.5], "length": s.root + ri, "width": b1 - b0, "height": s.root + 0.5, "body_name": "Ear root"}))?);
             bb.push(self.first("solid.box", json!({"corner": [-ri, b0, -f - s.root], "length": s.root + ri, "width": b1 - b0, "height": s.root + 0.5, "body_name": "Ear root"}))?);
+        }
+        if s.chamfer {
+            // Blocks beyond the lines b - b0 = a and b1 - b = a, each made square and turned 45°
+            // about that end of the ear's foot.
+            let l = 3.0 * (fw + s.root) + 10.0;
+            let (h, c) = (2.0 * (f + s.root) + 6.0, -f - s.root - 3.0);
+            let lo = self.first("solid.box", json!({"corner": [0.0, b0 - l, c], "length": l, "width": l, "height": h, "body_name": "Ear chamfer"}))?;
+            self.run("solid.move", json!({"bodies": [lo], "axis": [0, 0, 1], "angle": "45 deg", "origin": [0.0, b0, 0.0]}))?;
+            let hi = self.first("solid.box", json!({"corner": [0.0, b1, c], "length": l, "width": l, "height": h, "body_name": "Ear chamfer"}))?;
+            self.run("solid.move", json!({"bodies": [hi], "axis": [0, 0, 1], "angle": "-45 deg", "origin": [0.0, b1, 0.0]}))?;
+            self.run("solid.combine", json!({"target": lo, "tools": [hi], "operation": "join"}))?;
+            let bodies: Vec<String> = a.iter().chain(bb.iter()).cloned().collect();
+            for (i, body) in bodies.iter().enumerate() {
+                self.combine(body, &[lo.clone()], "cut", i + 1 < bodies.len())?;
+            }
         }
         let rot = Rot::from_columns(u, e, n);
         let all: Vec<&String> = a.iter().chain(bb.iter()).collect();
@@ -396,7 +414,7 @@ pub fn build<R: Runner>(r: &mut R, p: &Params, prep: &Prep) -> Result<Value, Str
         if ka == kb {
             return Err(format!("internal: joint {i} has {} on both sides", NAMES[ka]));
         }
-        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d, root: 0.0, pry: 0.0 };
+        let es = EarSpec { f, fw, ov, eps, bolt_d, dowel_d, root: 0.0, pry: 0.0, chamfer: false };
         let (ha, hb, nb, nd) = b.ear(&es, *o, *ed, *u, b0, b1, row)?;
         let (ha, hb) = (ha[0].clone(), hb[0].clone());
         bolts += nb;
